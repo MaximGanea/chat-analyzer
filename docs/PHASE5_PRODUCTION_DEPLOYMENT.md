@@ -390,10 +390,7 @@ This is a one-off command that runs Alembic against the real RDS database. Run i
 
 ```bash
 cd /opt/chat-analyzer/repo
-docker run --rm \
-  --env-file backend/.env \
-  chat-analyzer-backend:latest \
-  alembic upgrade head
+docker run --rm --env-file backend/.env chat-analyzer-backend:latest alembic upgrade head
 ```
 
 Expected output ends with something like:
