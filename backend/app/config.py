@@ -15,6 +15,7 @@ class Settings(BaseSettings):
         default="postgresql+asyncpg://chat_user:chat_pass@localhost:5432/chat_analyzer",
         alias="DATABASE_URL",
     )
+    database_ssl: bool = Field(default=False, alias="DATABASE_SSL")
 
     jwt_secret_key: str = Field(default="change-me-in-prod", alias="JWT_SECRET_KEY")
     jwt_algorithm: str = Field(default="HS256", alias="JWT_ALGORITHM")

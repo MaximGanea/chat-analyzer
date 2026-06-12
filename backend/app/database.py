@@ -11,7 +11,7 @@ engine = create_async_engine(
     settings.database_url,
     future=True,
     pool_pre_ping=True,
-    connect_args={"ssl": settings.environment == "production"},
+    connect_args={"ssl": settings.database_ssl},
 )
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
