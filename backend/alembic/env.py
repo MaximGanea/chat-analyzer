@@ -71,11 +71,12 @@ async def run_async_migrations() -> None:
 
     """
 
+    from app.database import _ssl_context
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
-        connect_args={"ssl": False},
+        connect_args={"ssl": _ssl_context()},
     )
 
     async with connectable.connect() as connection:
