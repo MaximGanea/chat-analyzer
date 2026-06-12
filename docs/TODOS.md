@@ -185,6 +185,7 @@ See `PHASE5_PRODUCTION_DEPLOYMENT.md` for the full step-by-step guide.
 **RDS hardening:**
 9. Enable **RDS Multi-AZ** on the existing instance. What happens to your application during a Multi-AZ failover? How long does it take?
 10. Enable **RDS Proxy** in front of the database. Point `DATABASE_URL` to the proxy endpoint instead of the RDS endpoint directly. What problem does RDS Proxy solve that asyncpg's built-in pool does not?
+11. Fix RDS certificate verification in `database.py`. Currently the connection is encrypted but skips CA verification (`CERT_NONE`) because the AWS RDS CA is not in the container's trust store. The proper fix: download the AWS RDS CA bundle (`https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem`), add it to the Docker image via `COPY`, and pass it to the SSL context via `ctx.load_verify_locations()`. Set `ctx.verify_mode = ssl.CERT_REQUIRED` and `ctx.check_hostname = True` after loading the bundle. This is low priority — the VPC already prevents network interception — but worth doing for defence in depth.
 
 **Validation:** Terminate the EC2 instance. Launch a replacement from scratch using only the CI/CD workflow and Parameter Store — no manual `.env` creation, no manual cert setup. The application is back within 10 minutes.
 
