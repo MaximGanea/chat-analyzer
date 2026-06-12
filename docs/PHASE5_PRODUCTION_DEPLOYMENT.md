@@ -38,16 +38,24 @@ RDS PostgreSQL (private subnet, not internet-accessible)
 
 1. Open the AWS Console → EC2 → **Launch instance**
 2. Name: `chat-analyzer-prod`
-3. AMI: **Ubuntu Server 24.04 LTS** (64-bit x86)
+3. AMI: **Amazon Linux 2023 AMI** (64-bit x86) — search for "Amazon Linux 2023" in the AMI list. It has the SSM agent pre-installed and running, Docker available in `dnf`, and is AWS-optimized.
 4. Instance type: **t3.small** (2 vCPU, 2 GB RAM — enough for one gunicorn backend)
-5. Key pair: create a new one, download the `.pem` file, save it somewhere safe (`~/.ssh/chat-analyzer.pem`). You will never be able to download it again.
+5. Key pair: select **Proceed without a key pair** — you will connect exclusively via SSM Session Manager (browser terminal), which does not use SSH keys.
 6. Network settings — create a new security group named `chat-analyzer-ec2-sg`:
-   - Inbound rule: SSH, port 22, source **My IP** (not 0.0.0.0/0 — only your IP)
-   - Inbound rule: HTTP, port 80, source **Anywhere** (0.0.0.0/0) — needed for the certbot challenge
+   - No SSH rule — you connect via SSM, which tunnels through IAM. Port 22 never needs to be open.
+   - Inbound rule: HTTP, port 80, source **Anywhere** (0.0.0.0/0) — required for the certbot ACME challenge
    - Inbound rule: HTTPS, port 443, source **Anywhere**
-   - Do NOT open port 8000 publicly — backend must only be reachable via nginx
-7. Storage: 20 GB gp3 is enough
-8. Click **Launch instance**
+   - Do NOT open port 8000 publicly — the backend must only be reachable through nginx
+   - Outbound rule: All traffic, destination **Anywhere** (0.0.0.0/0) — required for the SSM agent to reach AWS endpoints, and for the instance to pull packages and Docker images. AWS adds this by default but verify it is present — if missing the Session Manager tab will be greyed out and no outbound connections will work.
+7. IAM instance profile — scroll down to **Advanced details**:
+   - **IAM instance profile** → **Create new IAM role**
+   - Trusted entity: **EC2**
+   - Attach the `AmazonSSMManagedInstanceCore` managed policy
+   - Role name: `chat-analyzer-ec2-ssm-role` → Create
+   - Back in the launch wizard, select the new role from the **IAM instance profile** dropdown
+   - This lets the SSM agent communicate with the SSM service. Without it, the Session Manager tab will be greyed out.
+8. Storage: 20 GB gp3 is enough
+9. Click **Launch instance**
 
 ### 1.2 Allocate and associate an Elastic IP
 
@@ -73,42 +81,61 @@ dig +short yourdomain.com
 # should return your Elastic IP
 ```
 
-### 1.4 SSH into the instance
+### 1.4 Connect to the instance via SSM (AWS console)
 
-```bash
-chmod 400 ~/.ssh/chat-analyzer.pem
-ssh -i ~/.ssh/chat-analyzer.pem ubuntu@YOUR_ELASTIC_IP
-```
+No SSH client, no open ports, no static IP needed.
+
+1. EC2 console → **Instances** → select `chat-analyzer-prod`
+2. Click **Connect** (top right)
+3. Choose the **Session Manager** tab → **Connect**
+
+A browser terminal opens directly on the instance as `ssm-user`. This is your main way to run commands on the server throughout this guide.
+
+On Amazon Linux 2023 the SSM agent starts automatically on boot, so this should work within 30–60 seconds of the instance reaching the "running" state. If the tab is greyed out, wait another minute and refresh. If it still fails, confirm the IAM role is attached: EC2 → Instance → **Actions → Security → Modify IAM role**.
+
+> **File transfers:** Push your code to a git repository and `git pull` on the server — that is the deployment method used in this guide. No rsync or SCP needed.
 
 ---
 
 ## Step 2 — Install server dependencies
 
-Run these on the EC2 instance:
+Run these commands in your SSM terminal session. All commands use `sudo` because the SSM session runs as `ssm-user`, not root.
 
 ```bash
-sudo apt update && sudo apt upgrade -y
+# refresh package metadata and apply any OS security updates
+sudo dnf update -y
 
-# Docker
-sudo apt install -y ca-certificates curl
-sudo install -m 0755 -d /etc/apt/keyrings
-sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-sudo chmod a+r /etc/apt/keyrings/docker.asc
-echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] \
-  https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" \
-  | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
-sudo apt update
-sudo apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+# git — needed to clone your repo onto the server
+sudo dnf install -y git
 
-# Add your user to the docker group so you don't need sudo
-sudo usermod -aG docker ubuntu
-newgrp docker
+# Docker — runs the backend container
+sudo dnf install -y docker
+# enable: start Docker now and automatically on every reboot
+sudo systemctl enable docker --now
+# add ssm-user to the docker group so docker commands work without sudo
+# (takes effect after reconnecting the SSM session)
+sudo usermod -aG docker ssm-user
 
-# nginx and certbot
-sudo apt install -y nginx certbot python3-certbot-nginx
+# nginx — sits in front of the backend, proxies /api/* and serves static files for now
+sudo dnf install -y nginx
+sudo systemctl enable nginx --now
 
-# psql client (for testing RDS connection)
-sudo apt install -y postgresql-client
+# certbot dependencies:
+#   python3      — certbot is a Python tool
+#   augeas-libs  — certbot uses augeas to safely edit the nginx config file
+sudo dnf install -y python3 augeas-libs
+# create an isolated Python environment for certbot so it doesn't conflict with system Python
+sudo python3 -m venv /opt/certbot/
+# upgrade pip inside that environment
+sudo /opt/certbot/bin/pip install --upgrade pip
+# install certbot and its nginx plugin inside the environment
+sudo /opt/certbot/bin/pip install certbot certbot-nginx
+# create a symlink so you can just type `certbot` instead of the full path
+# /usr/bin is in the system PATH, so anything here is available as a plain command
+sudo ln -s /opt/certbot/bin/certbot /usr/bin/certbot
+
+# psql client — lets you connect to RDS from the server to verify the connection
+sudo dnf install -y postgresql15
 ```
 
 ---
@@ -132,7 +159,7 @@ sudo apt install -y postgresql-client
 3. Templates: **Free tier** (db.t3.micro, 20 GB storage) — fine for this phase
 4. DB instance identifier: `chat-analyzer-prod`
 5. Master username: `chat_user`
-6. Master password: generate a strong random password, save it in a password manager. You will put this in `.env.prod` on the server.
+6. Master password: generate a strong random password, save it in a password manager. You will put this in `backend/.env` on the server.
 7. **Connectivity:**
    - VPC: your default VPC
    - DB subnet group: create new — select **at least two subnets in different AZs** (required by RDS). Click **Create DB subnet group**.
@@ -141,8 +168,8 @@ sudo apt install -y postgresql-client
    - Availability zone: no preference
 8. **Additional configuration:**
    - Initial database name: `chat_analyzer`
-   - Automated backups: **enable**, retention 7 days (covered in Step 6)
-   - Deletion protection: **enable** — prevents accidental `terraform destroy` or console click
+   - Automated backups: **enable**, retention 7 days (covered in Step 9)
+   - Deletion protection: **enable** — prevents accidental console click or script error
 9. Click **Create database** — this takes about 5 minutes
 
 ### 3.3 Open the RDS security group to EC2
@@ -153,7 +180,7 @@ By default the new `chat-analyzer-rds-sg` has no inbound rules.
 2. Add rule:
    - Type: PostgreSQL
    - Port: 5432
-   - Source: **Custom** → search for `chat-analyzer-ec2-sg` (the EC2 security group, not the IP)
+   - Source: **Custom** → search for `chat-analyzer-ec2-sg` (the EC2 security group, not an IP)
 3. Save
 
 This means only traffic originating from your EC2 instance can reach port 5432 on RDS. No other source — including the internet — can connect.
@@ -162,7 +189,7 @@ This means only traffic originating from your EC2 instance can reach port 5432 o
 
 Once RDS status is **Available**, grab the endpoint from the RDS console (looks like `chat-analyzer-prod.xxxx.us-east-1.rds.amazonaws.com`).
 
-SSH into EC2 and run:
+In your SSM session, run:
 
 ```bash
 psql -h your-rds-endpoint.rds.amazonaws.com -U chat_user -d chat_analyzer
@@ -174,7 +201,7 @@ psql -h your-rds-endpoint.rds.amazonaws.com -U chat_user -d chat_analyzer
 If this fails:
 - Check that the RDS security group inbound rule references the EC2 security group (not an IP)
 - Check that your EC2 instance is in the same VPC as the RDS instance
-- Check that the RDS instance is not in a subnet that has no route to the EC2 subnet
+- Check that the RDS instance is not in a subnet with no route to the EC2 subnet
 
 ---
 
@@ -182,10 +209,10 @@ If this fails:
 
 Certbot needs nginx to already be running and serving HTTP before it can issue a certificate. Set up HTTP first, then add HTTPS.
 
-Create the nginx site config:
+On Amazon Linux 2023, nginx uses `conf.d/` for site configs — there is no `sites-available`/`sites-enabled` pattern. Create your site config directly:
 
 ```bash
-sudo nano /etc/nginx/sites-available/yourdomain.com
+sudo nano /etc/nginx/conf.d/yourdomain.com.conf
 ```
 
 Paste this (replace `yourdomain.com` with your actual domain):
@@ -198,7 +225,6 @@ server {
     root /var/www/html;
     index index.html;
 
-    # Proxy all /api/* requests to the backend container
     location /api/ {
         proxy_pass http://127.0.0.1:8000;
         proxy_set_header Host $host;
@@ -207,26 +233,25 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Serve the React SPA — all non-API routes return index.html
     location / {
         try_files $uri $uri/ /index.html;
     }
 }
 ```
 
-Enable the site and test:
+Create the web root, test, and reload:
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/yourdomain.com /etc/nginx/sites-enabled/
+sudo mkdir -p /var/www/html
 sudo nginx -t          # must print "syntax is ok" and "test is successful"
 sudo systemctl reload nginx
 ```
 
-Verify nginx is serving HTTP (not yet HTTPS):
+Verify nginx is serving HTTP:
 
 ```bash
 curl http://yourdomain.com
-# should return the default nginx page or a 404 — any response means nginx is up
+# any response (default page, 404) means nginx is up
 ```
 
 ---
@@ -240,7 +265,7 @@ TLS termination means decrypting HTTPS traffic and forwarding plain HTTP interna
 - The backend never handles TLS — one less thing to configure and rotate
 - Internal traffic (nginx → backend) stays on localhost, so plain HTTP is safe
 - Certificate renewal is managed in one place (certbot + nginx)
-- The `secure=True` flag on the refresh cookie requires HTTPS — without TLS, the cookie will not be set
+- The `secure=True` flag on the refresh cookie requires HTTPS — without TLS, the browser will silently drop the cookie
 
 ### Run certbot
 
@@ -253,17 +278,29 @@ Certbot will:
 2. Issue a certificate from Let's Encrypt (free, trusted by all browsers)
 3. Automatically modify your nginx config to add the HTTPS server block and redirect HTTP → HTTPS
 
-After certbot finishes, your nginx config will have a second `server` block for port 443 with `ssl_certificate` lines added. You do not need to edit it manually.
+After certbot finishes, your nginx config will have a second `server` block for port 443 with `ssl_certificate` lines. You do not need to edit it manually.
 
-### Verify auto-renewal
+### Set up auto-renewal
 
-Let's Encrypt certificates expire after 90 days. Certbot installs a systemd timer to renew automatically:
+Let's Encrypt certificates expire after 90 days. The pip-installed certbot does NOT set up auto-renewal automatically — you need to do it manually.
+
+`/etc/cron.d/` does not exist on Amazon Linux 2023 by default, so create it first:
 
 ```bash
-sudo systemctl status certbot.timer
-# should show "active (waiting)"
+sudo mkdir -p /etc/cron.d
+echo "0 0,12 * * * root certbot renew -q" | sudo tee /etc/cron.d/certbot
+```
 
-# dry run to confirm renewal works without actually issuing a new cert:
+This runs the renewal check twice a day (midnight and noon). If the certificate is close to expiry certbot renews it automatically, otherwise it skips silently.
+
+Verify it was created and test that renewal works:
+
+```bash
+# confirm the cron job exists
+sudo cat /etc/cron.d/certbot
+# should print: 0 0,12 * * * root certbot renew -q
+
+# dry run — tests renewal without actually issuing a new cert
 sudo certbot renew --dry-run
 # should print "Congratulations, all simulated renewals succeeded"
 ```
@@ -272,20 +309,45 @@ sudo certbot renew --dry-run
 
 ```bash
 curl https://yourdomain.com
-# should return a response (not a certificate error)
+# should return a response, not a certificate error
 ```
 
 Open `https://yourdomain.com` in a browser — you should see a padlock and no certificate warning.
 
 ---
 
-## Step 6 — Create the environment file on the server
+## Step 6 — Clone the repo and create the environment file
 
-On the EC2 instance, create the production env file for the backend. Never commit this file to git.
+### 6.1 Clone the repo
 
 ```bash
 sudo mkdir -p /opt/chat-analyzer
-sudo nano /opt/chat-analyzer/.env.prod
+sudo chown ssm-user:ssm-user /opt/chat-analyzer
+git clone https://github.com/youruser/chat-analyzer.git /opt/chat-analyzer/repo
+cd /opt/chat-analyzer/repo
+```
+
+For subsequent deploys, pull the latest:
+
+```bash
+cd /opt/chat-analyzer/repo && git pull
+```
+
+### 6.2 Create the environment file
+
+The prod Docker run command reads `backend/.env` (relative to the repo root). Never commit this file to git — it is already in `.gitignore`.
+
+First generate a strong JWT secret:
+
+```bash
+openssl rand -hex 32
+# copy the output — you will paste it as JWT_SECRET_KEY below
+```
+
+Then create the file:
+
+```bash
+nano /opt/chat-analyzer/repo/backend/.env
 ```
 
 Contents (fill in real values):
@@ -297,7 +359,7 @@ APP_DEBUG=false
 
 DATABASE_URL=postgresql+asyncpg://chat_user:YOUR_RDS_PASSWORD@your-rds-endpoint.rds.amazonaws.com:5432/chat_analyzer
 
-JWT_SECRET_KEY=<output of: openssl rand -hex 32>
+JWT_SECRET_KEY=<paste openssl output here>
 JWT_ALGORITHM=HS256
 ACCESS_TOKEN_EXPIRE_MINUTES=15
 REFRESH_TOKEN_EXPIRE_DAYS=7
@@ -308,52 +370,28 @@ CORS_ALLOWED_ORIGINS=https://yourdomain.com,https://www.yourdomain.com
 Restrict permissions — this file contains secrets:
 
 ```bash
-sudo chmod 600 /opt/chat-analyzer/.env.prod
-sudo chown root:root /opt/chat-analyzer/.env.prod
-```
-
-Generate a strong JWT secret locally and paste it in:
-
-```bash
-openssl rand -hex 32
+chmod 600 /opt/chat-analyzer/repo/backend/.env
 ```
 
 ---
 
 ## Step 7 — Deploy the backend container
 
-### 7.1 Copy the backend to the server
-
-On your **local machine**, copy the backend source:
+### 7.1 Build the prod image
 
 ```bash
-rsync -avz --exclude '__pycache__' --exclude '*.pyc' --exclude '.env' \
-  backend/ ubuntu@YOUR_ELASTIC_IP:/opt/chat-analyzer/backend/
-```
-
-Or clone the repo on the server directly:
-
-```bash
-# on EC2:
-git clone https://github.com/youruser/chat-analyzer.git /opt/chat-analyzer/repo
-```
-
-### 7.2 Build the prod image on the server
-
-```bash
-# on EC2, from the directory containing the backend source:
-cd /opt/chat-analyzer/repo    # or wherever your code is
-
+cd /opt/chat-analyzer/repo
 docker build -t chat-analyzer-backend:latest ./backend --target prod
 ```
 
-### 7.3 Run migrations before starting the container
+### 7.2 Run migrations before starting the container
 
 This is a one-off command that runs Alembic against the real RDS database. Run it once before every deploy:
 
 ```bash
+cd /opt/chat-analyzer/repo
 docker run --rm \
-  --env-file /opt/chat-analyzer/.env.prod \
+  --env-file backend/.env \
   chat-analyzer-backend:latest \
   alembic upgrade head
 ```
@@ -364,24 +402,25 @@ INFO  [alembic.runtime.migration] Running upgrade  -> abc123, create users table
 INFO  [alembic.runtime.migration] Running upgrade abc123 -> def456, create refresh_sessions table
 ```
 
-If you see `FAILED` check that the `DATABASE_URL` in `.env.prod` is correct and the RDS security group allows port 5432 from the EC2 instance.
+If you see `FAILED` check that the `DATABASE_URL` in `backend/.env` is correct and the RDS security group allows port 5432 from the EC2 instance.
 
-### 7.4 Start the backend container
+### 7.3 Start the backend container
 
 ```bash
+cd /opt/chat-analyzer/repo
 docker run -d \
   --name chat-analyzer-backend \
   --restart unless-stopped \
-  --env-file /opt/chat-analyzer/.env.prod \
+  --env-file backend/.env \
   -p 127.0.0.1:8000:8000 \
   chat-analyzer-backend:latest
 ```
 
 Key flags:
-- `-p 127.0.0.1:8000:8000` — binds port 8000 on **localhost only**, not on all interfaces. This means the backend is not reachable from the internet directly, only via nginx (which runs on the same machine).
+- `-p 127.0.0.1:8000:8000` — binds port 8000 on **localhost only**, not on all interfaces. The backend is not reachable from the internet directly — only via nginx on the same machine.
 - `--restart unless-stopped` — Docker restarts the container if it crashes or the server reboots
 
-### 7.5 Verify the health endpoint
+### 7.4 Verify the health endpoint
 
 ```bash
 curl http://127.0.0.1:8000/health
@@ -409,40 +448,47 @@ docker inspect --format='{{.State.Health.Status}}' chat-analyzer-backend
 
 ## Step 8 — Build and deploy the frontend
 
-### 8.1 Build on your local machine
-
-`VITE_API_URL` must be empty so that Axios uses relative paths (`/api/...`). nginx on the server will proxy those to the backend.
+### 8.1 Install Node.js on the server (one-time)
 
 ```bash
-# in frontend/
+# NodeSource RPM repository for Node.js 22 LTS
+curl -fsSL https://rpm.nodesource.com/setup_22.x | sudo bash -
+sudo dnf install -y nodejs
+node --version   # should print v22.x.x
+```
+
+### 8.2 Build on the server
+
+```bash
+cd /opt/chat-analyzer/repo/frontend
+npm ci
 VITE_API_URL= npm run build
 ```
 
-Or set it in `frontend/.env.production`:
+`VITE_API_URL` must be empty so Axios uses relative paths (`/api/...`). nginx on the server will proxy those to the backend.
 
-```env
-VITE_API_URL=
-```
-
-Then run `npm run build`. The output is in `frontend/dist/`.
-
-### 8.2 Upload to the server
+### 8.3 Copy to the nginx web root
 
 ```bash
-rsync -avz --delete frontend/dist/ ubuntu@YOUR_ELASTIC_IP:/var/www/html/
+sudo cp -r /opt/chat-analyzer/repo/frontend/dist/. /var/www/html/
 ```
 
-`--delete` removes files on the server that no longer exist in the local build, so stale chunks from a previous deploy don't linger.
-
-### 8.3 Set correct permissions
+For subsequent deploys, clear old files first so stale chunks from a previous build don't linger:
 
 ```bash
-# on EC2:
-sudo chown -R www-data:www-data /var/www/html
+sudo rm -rf /var/www/html/* && sudo cp -r /opt/chat-analyzer/repo/frontend/dist/. /var/www/html/
+```
+
+### 8.4 Set correct permissions
+
+On Amazon Linux 2023, nginx runs as the `nginx` user:
+
+```bash
+sudo chown -R nginx:nginx /var/www/html
 sudo chmod -R 755 /var/www/html
 ```
 
-### 8.4 Verify the full flow
+### 8.5 Verify the full flow
 
 Open `https://yourdomain.com` in your browser. You should see the login page.
 
@@ -482,7 +528,6 @@ If you followed Step 3, automated backups are already enabled with 7-day retenti
 Before any migration that drops or renames columns:
 
 ```bash
-# AWS CLI — create a manual snapshot:
 aws rds create-db-snapshot \
   --db-instance-identifier chat-analyzer-prod \
   --db-snapshot-identifier chat-analyzer-pre-migration-$(date +%Y%m%d)
@@ -534,7 +579,7 @@ curl http://127.0.0.1:8000/health  # does the backend respond locally?
 
 **Refresh cookie is not being set (no `Set-Cookie` header)**
 
-`ENVIRONMENT` is not set to `production` in `.env.prod`. The `secure=True` flag on the cookie is gated on that env var (`auth.py`). Without `secure=True`, the browser silently drops the cookie on HTTPS connections.
+`ENVIRONMENT` is not set to `production` in `backend/.env`. The `secure=True` flag on the cookie is gated on that env var (`auth.py`). Without `secure=True`, the browser silently drops the cookie on HTTPS connections.
 
 **`alembic upgrade head` fails with `could not connect to server`**
 
@@ -547,3 +592,7 @@ The React router is using history mode — nginx must return `index.html` for al
 **`curl https://yourdomain.com` returns a certificate error immediately after certbot**
 
 DNS has not propagated yet. Wait a few minutes and try again. You can check with `dig +short yourdomain.com` — it should return your Elastic IP before the cert will work.
+
+**Session Manager tab is greyed out**
+
+The IAM role is not attached or the SSM agent hasn't connected yet. Check: EC2 → Instance → **Actions → Security → Modify IAM role** and confirm `chat-analyzer-ec2-ssm-role` is assigned. If the role is correct, wait 1–2 more minutes — on a fresh instance the agent needs a moment to register with the SSM service.

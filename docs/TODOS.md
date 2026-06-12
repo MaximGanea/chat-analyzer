@@ -1,6 +1,6 @@
 # Action Items & Readiness Checklist
 
-**Last reviewed:** 2026-06-08
+**Last reviewed:** 2026-06-12
 
 ---
 
@@ -75,12 +75,14 @@
 
 **Objective:** Deploy the application to a real server accessible from the internet.
 
+See `PHASE5_PRODUCTION_DEPLOYMENT.md` for the full step-by-step guide.
+
 **Tasks:**
-1. Provision an EC2 t3.small with an Elastic IP. What is an Elastic IP and why does it matter for DNS?
+1. Provision an EC2 t3.small with an Elastic IP and connect via SSM Session Manager (no open SSH port). What is an Elastic IP and why does it matter for DNS?
 2. Create an RDS PostgreSQL instance in a private subnet. Connect from EC2 using `psql`. Understand VPC, public subnet, private subnet, security group.
 3. Configure nginx with certbot for HTTPS. What is TLS termination and why does it belong at the edge?
 4. Deploy the backend container. Run migrations. Verify the health endpoint responds.
-5. Build the frontend with `VITE_API_URL=` (empty), deploy to `/var/www/html`. Verify the full login flow end-to-end from a different machine.
+5. Build the frontend on the server, deploy to `/var/www/html`. Verify the full login flow end-to-end from a different machine.
 6. Set up automated RDS snapshots. What is the difference between an RDS automated backup and a manual snapshot?
 
 **Validation:** From your phone (not your development machine), create an account, log in, and log out.
@@ -92,26 +94,99 @@
 **Objective:** Never deploy manually again.
 
 **Tasks:**
-1. Create the GitHub Actions CI workflow (see [DEPLOYMENT.md](DEPLOYMENT.md#82-ci-workflow)). Make it run on every PR.
-2. Create the deployment workflow. Make it trigger on merge to `main`.
-3. Store secrets in GitHub Actions Environments. Why can't you store secrets in the repository, even in a private repo?
+1. Create an **ECR (Elastic Container Registry)** repository named `chat-analyzer-backend`. Push the backend Docker image to it from your local machine manually first to understand the flow. Why use ECR over Docker Hub for private AWS deployments?
+2. Create the GitHub Actions CI workflow. Run on every PR: install deps, run backend tests against a real PostgreSQL service container, run frontend tests.
+3. Create the **CD workflow**: on merge to `main` — build the Docker image, push to ECR, connect to EC2 via `aws ssm start-session` and pull + restart the container. Store the AWS credentials in GitHub Actions Environments (not repository secrets — what is the difference?).
 4. Add the `migrate` job before `deploy-backend`. What happens if you deploy new code before running migrations?
-5. Implement a smoke test in the deploy workflow: `curl` the health endpoint after deployment and verify it returns `{"status": "ok"}`. Stop if it fails.
+5. Implement a smoke test in the deploy workflow: `curl` the health endpoint after deployment and verify it returns `{"status": "ok"}`. Fail the workflow if it does not.
+6. Tag each deployment with the git SHA: `docker build -t chat-analyzer-backend:${{ github.sha }}`. How does this enable one-command rollback?
 
 **Validation:** Make a code change, push to a feature branch, open a PR, watch CI pass, merge, watch the deployment push the change to production — all without a manual command.
 
 ---
 
-### Phase 7: Scalability and Resilience (ongoing)
+### Phase 7: Frontend to S3 + CloudFront (1 week)
 
-**Objective:** Understand the limits of the current architecture and how to address them.
+**Objective:** Stop serving static files from EC2. Offload the frontend to a managed CDN so nginx only handles API proxying.
+
+**Why:** The React build is a set of static files — there is no reason to serve them from a compute instance. S3 + CloudFront gives you a global CDN, near-zero cost at this scale, and removes one reason to touch the EC2 instance.
 
 **Tasks:**
-1. Add PgBouncer. Load test with `locust` and observe connection counts on the RDS side with and without pooling.
-2. Migrate the frontend to S3 + CloudFront. What is edge caching and how does `Cache-Control: immutable` interact with it?
-3. Migrate the backend to ECS Fargate with a target-tracking auto-scaling policy. What is a target group health check and how does it differ from a Docker HEALTHCHECK?
-4. Set up CloudWatch alarms for: `5xx error rate > 1%`, `latency p99 > 2s`, `CPU > 80%`.
-5. Simulate a failure: terminate the RDS instance and observe recovery time. Then enable Multi-AZ and repeat. What is the actual RTO/RPO of each configuration?
+1. Create an S3 bucket named `chat-analyzer-frontend`. Enable **static website hosting**. Block all public access and serve exclusively through CloudFront (never expose the bucket directly). Why does serving through CloudFront instead of S3 directly matter for security and performance?
+2. Request an **ACM (AWS Certificate Manager)** certificate for `yourdomain.com` and `www.yourdomain.com` in `us-east-1` (required for CloudFront). ACM auto-renews — no certbot needed for the frontend. What is the difference between DNS validation and email validation for ACM?
+3. Create a **CloudFront distribution**:
+   - Origin: the S3 bucket (via Origin Access Control, not a public bucket URL)
+   - Default behavior: route to S3
+   - `/api/*` behavior: route to your EC2 Elastic IP
+   - Viewer protocol: HTTPS only, redirect HTTP
+   - Attach the ACM certificate
+4. Update DNS: point `yourdomain.com` to the CloudFront distribution domain, not the Elastic IP directly.
+5. Set correct `Cache-Control` headers:
+   - Hashed assets (`/assets/*.js`, `/assets/*.css`): `Cache-Control: public, max-age=31536000, immutable`
+   - `index.html`: `Cache-Control: no-cache` — so deploys are visible immediately
+6. Update the CI/CD deploy workflow: build the frontend in the GitHub Actions runner and sync to S3 with `aws s3 sync --delete`. Add a CloudFront invalidation for `index.html` after each deploy.
+7. Remove the nginx static file serving config from EC2 — nginx now only proxies `/api/*`. Verify the backend still works.
+8. Clean up files and docs that are now obsolete:
+   - Delete `docker-compose.prod.yml` — every service it defined is now replaced:
+     ```
+     docker-compose.prod.yml
+     ├── postgres   → RDS (replaced in Phase 5)
+     ├── backend    → docker run on EC2, image pulled from ECR (replaced in Phase 6)
+     └── frontend   → S3 + CloudFront (replaced in Phase 7)
+     ```
+   - Remove the Node.js install block from `PHASE5_PRODUCTION_DEPLOYMENT.md` (Step 8.1) — the frontend no longer builds on the server
+   - Remove Steps 8.2 and 8.3 from `PHASE5_PRODUCTION_DEPLOYMENT.md` — `/var/www/html` is no longer used
+   - Update the architecture diagram in `PHASE5_PRODUCTION_DEPLOYMENT.md` to reflect the new layout (CloudFront → S3 for frontend, CloudFront → EC2 for API)
+
+**Validation:** `curl -I https://yourdomain.com/assets/index-abc123.js` returns `Cache-Control: public, max-age=31536000, immutable` and an `X-Cache: Hit from cloudfront` header on the second request.
+
+---
+
+### Phase 8: Observability and Alerting (1–2 weeks)
+
+**Objective:** Know about problems before users report them.
+
+**Tasks:**
+1. Configure the Docker container to emit logs to **CloudWatch Logs** using the `awslogs` log driver. Create a log group `/chat-analyzer/backend` with a 30-day retention policy.
+2. Create **CloudWatch metric filters** on the log group to turn structured JSON log fields into metrics:
+   - Filter on `status_code >= 500` → custom metric `BackendErrors`
+   - Filter on `duration_ms` → custom metric `BackendLatency`
+3. Create **CloudWatch Alarms** for:
+   - `BackendErrors > 1%` of total requests over 5 minutes
+   - `BackendLatency p99 > 2000ms` over 5 minutes
+   - EC2 `CPUUtilization > 80%` over 10 minutes
+   - RDS `FreeStorageSpace < 2 GB`
+4. Wire alarms to an **SNS topic** that sends email notifications. Trigger a test alarm manually to confirm the notification reaches you.
+5. Add **Sentry** (or equivalent) to the frontend for client-side error reporting. Add the backend Sentry SDK and wire it into the global exception handler from Phase 2.
+6. Create a runbook (a short markdown document) for the three most likely incidents: backend container crashed, RDS unreachable, TLS certificate expired. What are the first three commands you run for each?
+
+**Validation:** Intentionally cause a 500 error in production. Confirm the alarm fires within 5 minutes, the notification arrives, and you can find the full stack trace in CloudWatch Logs via the `request_id`.
+
+---
+
+### Phase 9 (Optional): Production Hardening
+
+**Objective:** Replace the remaining manual and fragile pieces with fully managed AWS services. Do this when downtime or data loss would have a real cost — not before.
+
+**Estimated extra cost: ~$60–70/month on top of the existing stack.**
+
+**ALB + ACM (replace nginx + certbot on EC2):**
+1. Create an **Application Load Balancer** in the public subnet. Attach a listener on port 443 with an ACM certificate. Forward to a target group containing your EC2 instance on port 8000. What is the benefit of TLS termination at the ALB vs. on the EC2 instance?
+2. Update the CloudFront `/api/*` origin to point to the ALB DNS name instead of the EC2 Elastic IP directly.
+3. Update the EC2 security group: allow port 8000 inbound **only from the ALB security group** — not from anywhere else. The backend becomes unreachable even if someone knows the EC2 IP.
+4. Remove certbot and the HTTPS nginx config from EC2. nginx is no longer needed — the ALB routes directly to the Docker container on port 8000. Uninstall nginx.
+
+**AWS Parameter Store (replace `backend/.env` on disk):**
+5. Store all secrets in **AWS Systems Manager Parameter Store** as `SecureString` parameters under the path `/chat-analyzer/prod/`. Why is Parameter Store better than a `.env` file on disk? What is the difference between Parameter Store and Secrets Manager?
+6. Grant the EC2 IAM role (`chat-analyzer-ec2-ssm-role`) `ssm:GetParametersByPath` permission for `/chat-analyzer/prod/*`.
+7. Update the container startup: read secrets from Parameter Store at launch instead of from a file. Remove `backend/.env` from the server entirely.
+8. Update the CI/CD workflow to pull non-secret config from Parameter Store rather than hardcoding it.
+
+**RDS hardening:**
+9. Enable **RDS Multi-AZ** on the existing instance. What happens to your application during a Multi-AZ failover? How long does it take?
+10. Enable **RDS Proxy** in front of the database. Point `DATABASE_URL` to the proxy endpoint instead of the RDS endpoint directly. What problem does RDS Proxy solve that asyncpg's built-in pool does not?
+
+**Validation:** Terminate the EC2 instance. Launch a replacement from scratch using only the CI/CD workflow and Parameter Store — no manual `.env` creation, no manual cert setup. The application is back within 10 minutes.
 
 ---
 
@@ -145,8 +220,8 @@ Use this checklist before accepting live traffic. Each item is independently ver
 - [ ] Error boundary wraps the router; uncaught errors show a fallback UI, not a blank screen
 - [ ] Login and register forms have `minLength` and `maxLength` attributes on password field
 - [ ] Bundle size analyzed; no unexpected large dependencies (`npm run build` shows chunk sizes)
-- [ ] Static assets have `Cache-Control: public, immutable` with content-hash filenames
-- [ ] `index.html` has `Cache-Control: no-cache` (so deploys are seen immediately)
+- [ ] Hashed static assets served with `Cache-Control: public, max-age=31536000, immutable`
+- [ ] `index.html` served with `Cache-Control: no-cache` (so deploys are seen immediately)
 
 ### Database
 
@@ -154,29 +229,27 @@ Use this checklist before accepting live traffic. Each item is independently ver
 - [ ] A backup restoration has been tested (restored to a test instance and verified data integrity)
 - [ ] Deletion protection enabled on the RDS instance
 - [ ] Database is not publicly accessible (reachable only from backend security group)
-- [ ] `max_connections` on RDS is set above total possible connections from all backends
 - [ ] All migrations have tested `downgrade()` functions
-- [ ] PgBouncer or RDS Proxy is in front of RDS
 - [ ] Stale session cleanup verified: expired rows are actually deleted by the scheduled job
 
 ### Infrastructure
 
-- [ ] TLS certificate installed; `https://` works and HTTP redirects to HTTPS
-- [ ] TLS certificate auto-renewal configured and tested (`certbot renew --dry-run`)
-- [ ] Backend port 8000 is NOT exposed to the public internet (only accessible via nginx proxy)
-- [ ] SSH access to EC2 is restricted to known IP ranges (not `0.0.0.0/0`)
-- [ ] EC2 instance has an Elastic IP (IP does not change on restart)
-- [ ] DNS TTL is set low enough for failover (300 seconds or less)
-- [ ] Resource limits (`mem_limit`, `cpus`) set on all containers in production compose
+- [ ] HTTPS enforced; HTTP redirects to HTTPS
+- [ ] certbot auto-renewal verified (`sudo certbot renew --dry-run`)
+- [ ] Backend port 8000 is NOT reachable directly from the internet (nginx proxies all traffic)
+- [ ] EC2 has no SSH inbound rule; access via SSM Session Manager only
+- [ ] EC2 has an Elastic IP (IP does not change on restart)
+- [ ] DNS TTL is 300 seconds or less
+- [ ] Frontend served from S3 + CloudFront, not from the EC2 instance
+- [ ] Resource limits (`mem_limit`, `cpus`) set on the backend container
 
 ### Security
 
-- [ ] All secrets (JWT key, DB password) sourced from a secrets manager — not hardcoded in env files on disk
 - [ ] `.env` files are not tracked in git (`git log --all --full-history -- '**/.env'`)
-- [ ] `venv/` directory is not tracked in git
 - [ ] HTTP Security Headers present: `Strict-Transport-Security`, `X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`
 - [ ] Dependency scan run: `pip-audit` for backend, `npm audit` for frontend — no high/critical issues
 - [ ] CORS `allow_origins` does not include `*`
+- [ ] ECR image scanning enabled — no critical CVEs in the deployed image
 
 ### CI/CD
 
@@ -184,15 +257,29 @@ Use this checklist before accepting live traffic. Each item is independently ver
 - [ ] CI blocks merges to `main` when tests fail
 - [ ] Deployments are fully automated — no manual steps required
 - [ ] Migration runs as a separate CI job before the backend deploy job
-- [ ] Production secrets are stored in CI environment secrets — not in the repository
-- [ ] Each deployment is tagged with a git SHA; rollback is a one-command operation
+- [ ] AWS credentials stored in GitHub Actions Environments — not in repository secrets
+- [ ] Each deployment tagged with git SHA; rollback is a one-command operation
 - [ ] Post-deployment smoke test (health check) automatically verifies the deployment succeeded
+- [ ] Frontend deploy triggers a CloudFront invalidation for `index.html`
 
 ### Observability
 
-- [ ] Structured JSON logs are shipped to a central log store (CloudWatch, Datadog, Loki)
-- [ ] Alarms configured for: 5xx error rate > 1%, p99 latency > 2 seconds, CPU > 80%
-- [ ] On-call notification path is tested (alarm fires and reaches a human)
-- [ ] Client-side error reporting integrated (Sentry or equivalent)
-- [ ] Database slow query log is enabled and reviewed before launch
-- [ ] A runbook exists for the top 3 most likely incidents: DB unreachable, OOM kill, certificate expiry
+- [ ] Container logs shipped to CloudWatch Logs with 30-day retention
+- [ ] CloudWatch alarms active for: backend error rate, latency, CPU utilization, RDS free storage
+- [ ] SNS alarm notifications tested end-to-end (alarm fires → email received)
+- [ ] Client-side error reporting active (Sentry or equivalent)
+- [ ] RDS slow query log enabled
+- [ ] Runbook exists for: backend container crashed, RDS unreachable, certificate expired
+
+---
+
+## 3. Optional Hardening Checklist (Phase 9)
+
+Do these when downtime or data loss would have a real cost.
+
+- [ ] ALB in front of EC2; TLS terminated at ALB with ACM certificate
+- [ ] Backend port 8000 accepts traffic only from the ALB security group
+- [ ] nginx removed from EC2; ALB routes directly to the Docker container
+- [ ] All secrets in AWS Parameter Store — no `.env` files on disk in production
+- [ ] RDS Multi-AZ enabled
+- [ ] RDS Proxy in front of the database endpoint
