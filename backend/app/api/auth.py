@@ -5,6 +5,7 @@ from app.config import get_settings
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models import User
+from app.limiter import limiter
 from app.schemas import MessageResponse, TokenResponse, UserCreate, UserLogin, UserRead
 from app.services.auth_service import (
     authenticate_user,
@@ -32,7 +33,8 @@ def _set_refresh_cookie(response: Response, token: str) -> None:
 
 
 @router.post("/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
-async def register(payload: UserCreate, response: Response, db: AsyncSession = Depends(get_db)) -> TokenResponse:
+@limiter.limit("5/minute")
+async def register(request: Request, payload: UserCreate, response: Response, db: AsyncSession = Depends(get_db)) -> TokenResponse:
     user = await register_user(db, payload)
     access_token, refresh_token = await issue_tokens(db, user, user_agent=None, ip_address=None)
     _set_refresh_cookie(response, refresh_token)
@@ -40,6 +42,7 @@ async def register(payload: UserCreate, response: Response, db: AsyncSession = D
 
 
 @router.post("/login", response_model=TokenResponse)
+@limiter.limit("10/minute")
 async def login(payload: UserLogin, request: Request, response: Response, db: AsyncSession = Depends(get_db)) -> TokenResponse:
     user = await authenticate_user(db, payload.email, payload.password)
     access_token, refresh_token = await issue_tokens(

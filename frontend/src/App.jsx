@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useDispatch } from 'react-redux'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import AdminRoute from './features/auth/components/AdminRoute'
@@ -11,8 +11,11 @@ import RegisterPage from './pages/RegisterPage'
 
 function App() {
   const dispatch = useDispatch()
+  const bootstrapped = useRef(false)
 
   useEffect(() => {
+    if (bootstrapped.current) return
+    bootstrapped.current = true
     dispatch(bootstrapSessionThunk())
   }, [dispatch])
 

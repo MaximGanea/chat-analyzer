@@ -33,7 +33,10 @@ async def register_user(db: AsyncSession, payload: UserCreate) -> User:
 async def authenticate_user(db: AsyncSession, email: str, password: str) -> User:
     result = await db.execute(select(User).where(User.email == email, User.is_active.is_(True)))
     user = result.scalar_one_or_none()
-    if user is None or not verify_password(password, user.password_hash):
+    if user is None:
+        verify_password(password, "dummy")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+    if not verify_password(password, user.password_hash):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     return user
 

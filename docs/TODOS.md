@@ -1,21 +1,16 @@
 # Action Items & Readiness Checklist
 
-**Last reviewed:** 2026-06-12
+**Last reviewed:** 2026-06-15
 
 ---
 
 ## 1. Learning Path
 
-### Phase 1: Fix What's Broken (1 week)
-
-**Objective:** Make the existing code correct and understand how the pieces fit together.
+### Phase 1: Fix What's Broken ✅ DONE
 
 **Tasks:**
-1. Add `minLength=8`, `maxLength=128` to `UserCreate.password` in `schemas.py`. Why: Argon2 becomes a DoS vector with unbounded input — a 1M-character password causes a CPU spike during hashing.
-2. Add `HEALTHCHECK` to `backend/Dockerfile` prod stage. Test by killing the backend process inside the container and observing `docker ps` status.
-3. Study how nginx, Vite proxy, and Axios interact with URL paths. Draw a diagram of the request path for each environment (local outside Docker, Docker dev, Docker prod).
-
-**Validation:** `docker compose -f docker-compose.prod.yml up --build` runs and all auth routes work end-to-end from a browser.
+- ✅ `min_length=8`, `max_length=128` on `UserCreate.password` in `schemas.py`
+- ✅ `HEALTHCHECK` in `backend/Dockerfile` prod stage
 
 ---
 
@@ -34,7 +29,6 @@
        return {"status": "ok", "db": "connected"}
    ```
 4. Add a global exception handler that logs the full stack trace with the `request_id` and returns a sanitized 500 response (no stack trace in the response body).
-5. Trigger a 500 locally, find the log line. Then trigger the same error on a deployed instance and find it in CloudWatch Logs.
 
 **Validation:** You can grep a `request_id` from a client error report and find the corresponding server-side log line within seconds.
 
@@ -45,37 +39,33 @@
 **Objective:** Close the security gaps that expose the application to automated attacks.
 
 **Tasks:**
-1. Add rate limiting with `slowapi`. Limit `POST /api/auth/login` to 5 requests per minute per IP. What is the difference between IP-based and user-based rate limiting?
-2. Add a per-user session limit to `issue_tokens` in `auth_service.py`: if a user has more than 5 active sessions, revoke the oldest before creating a new one.
-3. Tighten CORS: replace `allow_methods=["*"]` with `["GET", "POST", "PUT", "DELETE"]` and `allow_headers=["*"]` with `["Authorization", "Content-Type"]`.
-4. Generate a strong JWT secret and understand what happens to all existing tokens when you rotate the secret. How do you rotate without logging everyone out?
-5. Add the stale session cleanup query as a scheduled task (FastAPI startup event or separate management command).
+- ✅ Rate limiting with `slowapi` — `POST /api/auth/login` 10/min, `POST /api/auth/register` 5/min per IP
+- ✅ CORS tightened — `allow_methods` and `allow_headers` locked to explicit lists
+- Add a per-user session limit to `issue_tokens` in `auth_service.py`: if a user has more than 5 active sessions, revoke the oldest before creating a new one.
+- Add the stale session cleanup query as a scheduled task (FastAPI startup event or separate management command).
 
 **Validation:** Run `ab -n 100 -c 10 -p login.json -T application/json http://localhost:8000/api/auth/login`. Confirm responses start returning 429 after the rate limit is hit.
 
 ---
 
-### Phase 4: Testing (2 weeks)
+### Phase 4: Testing ✅ DONE
 
 **Objective:** Write tests that give you confidence to deploy without manual verification.
 
 **Tasks:**
-1. Set up `pytest` + `pytest-asyncio` + `httpx` in the backend. Write a `conftest.py` that creates a fresh PostgreSQL test schema and tears it down after each test. Not SQLite — use PostgreSQL.
-2. Write `test_auth.py` covering: register → login → refresh → logout → verify token invalidated.
-3. Write `test_token_rotation.py` covering: revoked token reuse rejected, expired token rejected, concurrent refresh produces exactly one valid session.
-4. Set up `vitest` in the frontend. Write tests for `authSlice.js` using a mock API.
-5. Write component tests for `ProtectedRoute` and `AdminRoute` with `@testing-library/react`.
-6. Add a GitHub Actions CI workflow that runs all tests. Confirm the workflow blocks merges when tests fail.
+1. ✅ Set up `pytest` + `pytest-asyncio` + `httpx` in the backend. Write a `conftest.py` that creates a fresh PostgreSQL test schema and tears it down after each test. Not SQLite — use PostgreSQL.
+2. ✅ Write `test_auth.py` covering: register → login → refresh → logout → verify token invalidated.
+3. ✅ Write `test_token_rotation.py` covering: revoked token reuse rejected, expired token rejected, concurrent refresh produces exactly one valid session.
+4. ✅ Set up `vitest` in the frontend. Write tests for `authSlice.js` using a mock API.
+5. ✅ Write component tests for `ProtectedRoute` and `AdminRoute` with `@testing-library/react`.
 
 **Validation:** Comment out `session.revoked_at = datetime.now(UTC)` in `auth_service.py:87`. Confirm the token rotation test catches it immediately.
 
 ---
 
-### Phase 5: First Production Deployment (1 week)
+### Phase 5: First Production Deployment ✅ DONE
 
-**Objective:** Deploy the application to a real server accessible from the internet.
-
-See `PHASE5_PRODUCTION_DEPLOYMENT.md` for the full step-by-step guide.
+See `guide/EC2_DEPLOYMENT.md` for the full step-by-step guide.
 
 **Tasks:**
 1. Provision an EC2 t3.small with an Elastic IP and connect via SSM Session Manager (no open SSH port). What is an Elastic IP and why does it matter for DNS?
@@ -124,8 +114,15 @@ See `PHASE5_PRODUCTION_DEPLOYMENT.md` for the full step-by-step guide.
 5. Set correct `Cache-Control` headers:
    - Hashed assets (`/assets/*.js`, `/assets/*.css`): `Cache-Control: public, max-age=31536000, immutable`
    - `index.html`: `Cache-Control: no-cache` — so deploys are visible immediately
-6. Update the CI/CD deploy workflow: build the frontend in the GitHub Actions runner and sync to S3 with `aws s3 sync --delete`. Add a CloudFront invalidation for `index.html` after each deploy.
+6. Update the CI/CD deploy workflow:
+   - **IAM first:** add S3 and CloudFront permissions to the `github-actions-chat-analyzer-policy` in IAM (the user created in Phase 6 has no S3 or CloudFront permissions yet — the sync will be denied without this).
+   - **Replace** the `deploy-frontend` job in `cd.yml` — the current job builds on EC2 via SSM/git pull; remove that job entirely and add a new job that builds in the GitHub Actions runner and syncs to S3. EC2 itself stays — the backend container keeps running there; only the frontend deploy mechanism changes.
+   - Run two separate `aws s3 sync` passes to set the correct `Cache-Control` per file type (task 5 is implemented here):
+     - Hashed assets first: `aws s3 sync dist/ s3://chat-analyzer-frontend --delete --exclude "index.html" --cache-control "public, max-age=31536000, immutable"`
+     - Then `index.html`: `aws s3 sync dist/ s3://chat-analyzer-frontend --exclude "*" --include "index.html" --cache-control "no-cache"`
+   - After the sync, invalidate the CloudFront cache for `index.html` so users see the new version immediately: `aws cloudfront create-invalidation --distribution-id YOUR_DIST_ID --paths "/index.html"`
 7. Remove the nginx static file serving config from EC2 — nginx now only proxies `/api/*`. Verify the backend still works.
+   - Also remove certbot from EC2: delete the renewal cron job (`/etc/cron.d/certbot`), the certbot virtualenv (`/opt/certbot`), and the Let's Encrypt certificates (`/etc/letsencrypt`). CloudFront handles TLS via ACM — certbot is dead weight after this phase.
 8. Clean up files and docs that are now obsolete:
    - Delete `docker-compose.prod.yml` — every service it defined is now replaced:
      ```

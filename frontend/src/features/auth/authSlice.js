@@ -50,9 +50,10 @@ export const bootstrapSessionThunk = createAsyncThunk('auth/bootstrap', async (_
 export const logoutThunk = createAsyncThunk('auth/logout', async (_, { rejectWithValue }) => {
   try {
     await api.post('/api/auth/logout')
-    clearAccessToken()
   } catch (error) {
     return rejectWithValue(error.response?.data?.detail ?? 'Logout failed')
+  } finally {
+    clearAccessToken()
   }
 })
 
