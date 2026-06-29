@@ -58,7 +58,7 @@ curl -I https://yourdomain.com/assets/index-abc123.js
 
 1. AWS Console → **S3** → **Create bucket**
 2. Bucket name: `chat-analyzer-frontend`
-3. Region: same region as your EC2 instance (e.g., `us-east-1`)
+3. Region: same region as your EC2 instance (e.g., `eu-central-1`)
 4. **Object Ownership:** leave at `ACLs disabled`
 5. **Block Public Access:** leave all four checkboxes checked (all public access blocked) — CloudFront will access the bucket privately via OAC, not through a public URL
 6. Leave all other settings at defaults → **Create bucket**
@@ -126,7 +126,7 @@ CloudFront → **Create distribution**
 
 | Field | Value |
 |---|---|
-| Origin domain | Select `chat-analyzer-frontend.s3.us-east-1.amazonaws.com` from the dropdown |
+| Origin domain | Select `chat-analyzer-frontend.s3.eu-central-1.amazonaws.com` from the dropdown |
 | Origin access | **Origin access control settings (recommended)** |
 | Origin access control | Select `chat-analyzer-frontend-oac` (created in Step 3) |
 
@@ -358,7 +358,7 @@ Open `.github/workflows/cd.yml`. Find the `deploy-frontend` job and replace it e
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-east-1
+          aws-region: eu-central-1
 
       - name: Sync hashed assets (long cache)
         run: |

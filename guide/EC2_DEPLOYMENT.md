@@ -163,7 +163,7 @@ This allows only traffic from your EC2 instance on port 5432. No other source ca
 
 ### 3.3 Verify the connection from EC2
 
-Once RDS status is **Available**, get the endpoint from the RDS console (`chat-analyzer-prod.xxxx.us-east-1.rds.amazonaws.com`).
+Once RDS status is **Available**, get the endpoint from the RDS console (`chat-analyzer-prod.xxxx.eu-central-1.rds.amazonaws.com`).
 
 ```bash
 psql -h your-rds-endpoint.rds.amazonaws.com -U chat_user -d chat_analyzer
