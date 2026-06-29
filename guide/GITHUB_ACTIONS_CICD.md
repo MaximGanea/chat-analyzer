@@ -478,7 +478,10 @@ jobs:
             "DocumentName": "AWS-RunShellScript",
             "Parameters": {
               "commands": [
-                "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${REGISTRY} && docker pull ${IMAGE} && docker run --rm --env-file /opt/chat-analyzer/repo/backend/.env ${IMAGE} alembic upgrade head"
+                "set -e",
+                "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${REGISTRY}",
+                "docker pull ${IMAGE}",
+                "docker run --rm --env-file /opt/chat-analyzer/repo/backend/.env ${IMAGE} alembic upgrade head"
               ]
             }
           }
@@ -538,7 +541,10 @@ jobs:
             "DocumentName": "AWS-RunShellScript",
             "Parameters": {
               "commands": [
-                "docker stop chat-analyzer-backend || true && docker rm chat-analyzer-backend || true && docker run -d --name chat-analyzer-backend --restart unless-stopped --env-file /opt/chat-analyzer/repo/backend/.env -p 127.0.0.1:8000:8000 ${IMAGE}"
+                "set -e",
+                "docker stop chat-analyzer-backend || true",
+                "docker rm chat-analyzer-backend || true",
+                "docker run -d --name chat-analyzer-backend --restart unless-stopped --env-file /opt/chat-analyzer/repo/backend/.env -p 127.0.0.1:8000:8000 ${IMAGE}"
               ]
             }
           }
@@ -597,7 +603,18 @@ jobs:
             "DocumentName": "AWS-RunShellScript",
             "Parameters": {
               "commands": [
-                "git config --global --add safe.directory /opt/chat-analyzer/repo && cd /opt/chat-analyzer/repo && git pull && cd frontend && npm ci && VITE_API_URL= npm run build && rm -rf /var/www/html/* && cp -r dist/. /var/www/html/ && chown -R nginx:nginx /var/www/html && chmod -R 755 /var/www/html"
+                "set -e",
+                "export HOME=/root",
+                "git config --global --add safe.directory /opt/chat-analyzer/repo",
+                "cd /opt/chat-analyzer/repo",
+                "git pull",
+                "cd frontend",
+                "npm ci",
+                "VITE_API_URL= npm run build",
+                "rm -rf /var/www/html/*",
+                "cp -r dist/. /var/www/html/",
+                "chown -R nginx:nginx /var/www/html",
+                "chmod -R 755 /var/www/html"
               ]
             }
           }
