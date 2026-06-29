@@ -1,0 +1,319 @@
+name: CD
+
+on:
+  push:
+    branches: [main]
+
+env:
+  AWS_REGION: eu-central-1
+  ECR_REPO: chat-analyzer-backend
+
+permissions:
+  id-token: write   # required for OIDC token request
+  contents: read    # required for actions/checkout
+
+jobs:
+  # ── Tests ──────────────────────────────────────────────────────────────────
+  # Run again on push to main. The merged commit may differ from the PR branch
+  # if two PRs merged at the same time — that combined state was never tested
+  # by CI. Never deploy untested code.
+
+  test-backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: test_user
+          POSTGRES_PASSWORD: test_pass
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements-test.txt
+      - run: pip install -r requirements-test.txt
+        working-directory: backend
+      - name: Run pytest
+        env:
+          DATABASE_URL: postgresql+asyncpg://test_user:test_pass@localhost:5432/test_db
+          JWT_SECRET_KEY: ci-secret-not-for-production
+          ENVIRONMENT: test
+        run: pytest
+        working-directory: backend
+
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run test:run
+        working-directory: frontend
+
+  # ── Build ──────────────────────────────────────────────────────────────────
+
+  build-and-push:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    environment: production
+    outputs:
+      registry: ${{ steps.login-ecr.outputs.registry }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          SHA: ${{ github.sha }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPO:$SHA"
+
+          docker build \
+            -t "$IMAGE" \
+            -t "$REGISTRY/$ECR_REPO:latest" \
+            ./backend --target prod
+
+          docker push "$IMAGE"
+          docker push "$REGISTRY/$ECR_REPO:latest"
+
+          echo "Pushed: $IMAGE"
+
+  # ── Migrate ────────────────────────────────────────────────────────────────
+  # Runs BEFORE replacing the running container. New code always expects the
+  # new schema. If you swap the container first and the migration has not run,
+  # the first requests hit new code against the old schema → 500 errors.
+
+  migrate:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Run alembic upgrade head on EC2
+        env:
+          REGISTRY: ${{ needs.build-and-push.outputs.registry }}
+          SHA: ${{ github.sha }}
+          INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPO:$SHA"
+
+          cat > /tmp/ssm-migrate.json << ENDJSON
+          {
+            "InstanceIds": ["${INSTANCE_ID}"],
+            "DocumentName": "AWS-RunShellScript",
+            "Parameters": {
+              "commands": [
+                "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${REGISTRY} && docker pull ${IMAGE} && docker run --rm --env-file /opt/chat-analyzer/repo/backend/.env ${IMAGE} alembic upgrade head"
+              ]
+            }
+          }
+          ENDJSON
+
+          COMMAND_ID=$(aws ssm send-command \
+            --cli-input-json "file:///tmp/ssm-migrate.json" \
+            --query 'Command.CommandId' --output text)
+
+          echo "SSM command ID: $COMMAND_ID"
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query 'Status' --output text)
+
+          echo "Migration status: $STATUS"
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "--- stderr from EC2 ---"
+            aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'StandardErrorContent' --output text
+            exit 1
+          fi
+
+  # ── Deploy backend ─────────────────────────────────────────────────────────
+
+  deploy-backend:
+    needs: [build-and-push, migrate]
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Replace backend container on EC2
+        env:
+          REGISTRY: ${{ needs.build-and-push.outputs.registry }}
+          SHA: ${{ github.sha }}
+          INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPO:$SHA"
+
+          cat > /tmp/ssm-deploy-backend.json << ENDJSON
+          {
+            "InstanceIds": ["${INSTANCE_ID}"],
+            "DocumentName": "AWS-RunShellScript",
+            "Parameters": {
+              "commands": [
+                "docker stop chat-analyzer-backend || true && docker rm chat-analyzer-backend || true && docker run -d --name chat-analyzer-backend --restart unless-stopped --env-file /opt/chat-analyzer/repo/backend/.env -p 127.0.0.1:8000:8000 ${IMAGE}"
+              ]
+            }
+          }
+          ENDJSON
+
+          COMMAND_ID=$(aws ssm send-command \
+            --cli-input-json "file:///tmp/ssm-deploy-backend.json" \
+            --query 'Command.CommandId' --output text)
+
+          echo "SSM command ID: $COMMAND_ID"
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query 'Status' --output text)
+
+          echo "Deploy status: $STATUS"
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "--- stderr from EC2 ---"
+            aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'StandardErrorContent' --output text
+            exit 1
+          fi
+
+  # ── Deploy frontend ────────────────────────────────────────────────────────
+  # Runs in parallel with migrate + deploy-backend — frontend and backend are
+  # independent. Both must finish before the smoke test runs.
+  # Note: this step will be replaced by S3 + CloudFront in Phase 7.
+
+  deploy-frontend:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Build and copy frontend on EC2
+        env:
+          INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+        run: |
+          cat > /tmp/ssm-deploy-frontend.json << ENDJSON
+          {
+            "InstanceIds": ["${INSTANCE_ID}"],
+            "DocumentName": "AWS-RunShellScript",
+            "Parameters": {
+              "commands": [
+                "cd /opt/chat-analyzer/repo && git pull && cd frontend && npm ci && VITE_API_URL= npm run build && rm -rf /var/www/html/* && cp -r dist/. /var/www/html/ && chown -R nginx:nginx /var/www/html && chmod -R 755 /var/www/html"
+              ]
+            }
+          }
+          ENDJSON
+
+          COMMAND_ID=$(aws ssm send-command \
+            --cli-input-json "file:///tmp/ssm-deploy-frontend.json" \
+            --query 'Command.CommandId' --output text)
+
+          echo "SSM command ID: $COMMAND_ID"
+
+          aws ssm wait command-executed \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID"
+
+          STATUS=$(aws ssm get-command-invocation \
+            --command-id "$COMMAND_ID" \
+            --instance-id "$INSTANCE_ID" \
+            --query 'Status' --output text)
+
+          echo "Frontend deploy status: $STATUS"
+
+          if [ "$STATUS" != "Success" ]; then
+            echo "--- stderr from EC2 ---"
+            aws ssm get-command-invocation \
+              --command-id "$COMMAND_ID" \
+              --instance-id "$INSTANCE_ID" \
+              --query 'StandardErrorContent' --output text
+            exit 1
+          fi
+
+  # ── Smoke test ─────────────────────────────────────────────────────────────
+  # Polls the health endpoint after both deploys finish. If the backend did not
+  # come up, the pipeline fails here and you are notified before any user hits
+  # a broken state.
+
+  smoke-test:
+    needs: [deploy-backend, deploy-frontend]
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Wait for container to start
+        run: sleep 5
+
+      - name: Health check
+        run: |
+          for i in $(seq 1 6); do
+            STATUS=$(curl -sf https://yourdomain.com/health \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null \
+              || echo "")
+
+            if [ "$STATUS" = "ok" ]; then
+              echo "Health check passed on attempt $i"
+              exit 0
+            fi
+
+            echo "Attempt $i: not ready (got: '$STATUS'), retrying in 10s..."
+            sleep 10
+          done
+
+          echo "ERROR: health check failed after 6 attempts"
+          exit 1

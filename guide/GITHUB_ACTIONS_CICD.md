@@ -66,24 +66,39 @@ ECR (Elastic Container Registry) is a private Docker registry inside your AWS ac
 1. AWS Console → **ECR** → **Get started** (or **Create repository**)
 2. Visibility: **Private**
 3. Repository name: `chat-analyzer-backend`
-4. **Image scan settings:** check **Scan on push** — ECR will flag known CVEs in your image automatically
-5. Leave all other settings at defaults → **Create repository**
+4. **Image tag mutability:** leave as **Mutable** (default) — this lets the `:latest` tag be overwritten on each push, which is what the CD workflow does
+5. **Encryption:** leave as **AES-256** (default)
+6. → **Create repository**
+
+> **Image scanning note:** AWS has moved CVE scanning from per-repository settings to a registry-level configuration. If you want it, go to ECR → **Private registry** → **Scanning** after repository creation and configure it there. It is not required for the pipeline to function.
 
 After creation, click the repository name. In the top right, note the **URI** — it looks like:
 
 ```
-123456789012.dkr.ecr.us-east-1.amazonaws.com/chat-analyzer-backend
+123456789012.dkr.ecr.eu-central-1.amazonaws.com/chat-analyzer-backend
 ```
 
-The part before the first `/` (`123456789012.dkr.ecr.us-east-1.amazonaws.com`) is your **registry URL**. You will need it in later steps.
+The part before the first `/` (`123456789012.dkr.ecr.eu-central-1.amazonaws.com`) is your **registry URL**. You will need it in later steps.
 
 ---
 
-## Step 2 — Create an IAM user for GitHub Actions
+## Step 2 — Set up OIDC federation and create the deployment role
 
-GitHub Actions needs AWS credentials to push images to ECR and to send commands to your EC2 instance via SSM. Create a dedicated user with the minimum permissions it needs — nothing more.
+Instead of creating long-term AWS access keys, GitHub Actions will use OIDC (OpenID Connect) to get short-lived credentials. Each workflow job requests a token from GitHub's identity provider, exchanges it for temporary AWS credentials valid only for that job's duration, and those credentials expire automatically when the job ends. Nothing to store, nothing to rotate, nothing to leak.
 
-### 2.1 Create a custom policy
+### 2.1 Create the GitHub OIDC identity provider
+
+IAM → **Identity providers** → **Add provider**
+
+- Provider type: **OpenID Connect**
+- Provider URL: `https://token.actions.githubusercontent.com` (AWS fetches the thumbprint automatically when you enter the URL)
+- Audience: `sts.amazonaws.com`
+
+→ **Add provider**
+
+> You only need to do this once per AWS account. If you have set it up before for another project, skip this step — check by looking for `token.actions.githubusercontent.com` in IAM → Identity providers.
+
+### 2.2 Create the permissions policy
 
 IAM → **Policies** → **Create policy** → **JSON** tab.
 
@@ -110,7 +125,7 @@ Replace `ACCOUNT_ID` with your 12-digit AWS account ID (visible in the top-right
         "ecr:CompleteLayerUpload",
         "ecr:DescribeRepositories"
       ],
-      "Resource": "arn:aws:ecr:us-east-1:ACCOUNT_ID:repository/chat-analyzer-backend"
+      "Resource": "arn:aws:ecr:eu-central-1:ACCOUNT_ID:repository/chat-analyzer-backend"
     },
     {
       "Sid": "SSMDeploy",
@@ -120,8 +135,8 @@ Replace `ACCOUNT_ID` with your 12-digit AWS account ID (visible in the top-right
         "ssm:GetCommandInvocation"
       ],
       "Resource": [
-        "arn:aws:ssm:us-east-1::document/AWS-RunShellScript",
-        "arn:aws:ec2:us-east-1:ACCOUNT_ID:instance/INSTANCE_ID"
+        "arn:aws:ssm:eu-central-1::document/AWS-RunShellScript",
+        "arn:aws:ec2:eu-central-1:ACCOUNT_ID:instance/INSTANCE_ID"
       ]
     }
   ]
@@ -134,24 +149,26 @@ Replace `ACCOUNT_ID` with your 12-digit AWS account ID (visible in the top-right
 AWS SSM requires you to grant permission on both the SSM document being used (`AWS-RunShellScript`) and the specific EC2 instance. Without both, the command is denied. Listing the exact instance ID also means these credentials cannot be used to run commands on any other instance in your account.
 
 **Why is `ECRPush` scoped to one repository?**
-If these credentials are ever leaked, an attacker can only push to `chat-analyzer-backend`. They cannot touch other ECR repos, cannot reach RDS, cannot access S3 — nothing outside what is listed here.
+If these credentials are ever compromised, an attacker can only push to `chat-analyzer-backend`. They cannot touch other ECR repos, cannot reach RDS, cannot access S3 — nothing outside what is listed here.
 
-### 2.2 Create the user
+### 2.3 Create the IAM role
 
-IAM → **Users** → **Create user**
+IAM → **Roles** → **Create role**
 
-1. User name: `github-actions-chat-analyzer`
-2. **Next** (no console access needed)
-3. **Attach policies directly** → search for `github-actions-chat-analyzer-policy` → check it → **Next** → **Create user**
+1. Trusted entity type: **Web identity**
+2. Identity provider: `token.actions.githubusercontent.com`
+3. Audience: `sts.amazonaws.com`
+4. Fill in the GitHub fields:
+   - **GitHub organization:** your GitHub username (for personal accounts this is just your username, e.g. `MaximGanea`)
+   - **GitHub repository:** `chat-analyzer`
+   - **GitHub branch:** leave blank (allows all branches and PR events)
+5. → **Next** → search for `github-actions-chat-analyzer-policy` → check it → **Next**
+6. Role name: `github-actions-chat-analyzer-role` → **Create role**
 
-### 2.3 Create access keys
+After creation, click the role name and copy the **ARN** shown at the top of the page — it looks like `arn:aws:iam::123456789012:role/github-actions-chat-analyzer-role`. You will need it in Step 5.
 
-1. IAM → **Users** → click `github-actions-chat-analyzer`
-2. **Security credentials** tab → **Create access key**
-3. Use case: **Third-party service** → **Next**
-4. **Create access key**
-
-Copy both `Access key ID` and `Secret access key` now — **AWS never shows the secret key again after this screen**. Keep them temporarily in a secure note; you will add them to GitHub in Step 5.
+**Why fill in the repository?**
+AWS uses these fields to build a trust condition scoped to your specific repo. Without it, any GitHub Actions workflow in any repository on GitHub could assume this role and push images to your ECR. Leaving branch blank is intentional — it allows both push-to-main (CD) and pull-request (CI) events.
 
 ---
 
@@ -179,9 +196,9 @@ In the terminal:
 
 ```bash
 # Replace with your registry URL from Step 1
-REGISTRY=123456789012.dkr.ecr.us-east-1.amazonaws.com
+REGISTRY=123456789012.dkr.ecr.eu-central-1.amazonaws.com
 
-aws ecr get-login-password --region us-east-1 | \
+aws ecr get-login-password --region eu-central-1 | \
   docker login --username AWS --password-stdin $REGISTRY
 ```
 
@@ -214,12 +231,11 @@ Name: `production` → **Configure environment**
 
 ### 5.2 Add environment secrets
 
-Still on the `production` environment page, scroll to **Environment secrets** → **Add secret** — add all three:
+Still on the `production` environment page, scroll to **Environment secrets** → **Add secret** — add both:
 
 | Secret name | Value |
 |---|---|
-| `AWS_ACCESS_KEY_ID` | The access key ID from Step 2.3 |
-| `AWS_SECRET_ACCESS_KEY` | The secret key from Step 2.3 |
+| `AWS_ROLE_ARN` | The role ARN from Step 2.3 (e.g., `arn:aws:iam::123456789012:role/github-actions-chat-analyzer-role`) |
 | `EC2_INSTANCE_ID` | Your EC2 instance ID (e.g., `i-0abc123def456`) |
 
 Find your instance ID: EC2 → Instances → click `chat-analyzer-prod` → **Instance ID** field.
@@ -325,8 +341,12 @@ on:
     branches: [main]
 
 env:
-  AWS_REGION: us-east-1
+  AWS_REGION: eu-central-1
   ECR_REPO: chat-analyzer-backend
+
+permissions:
+  id-token: write   # required for OIDC token request
+  contents: read    # required for actions/checkout
 
 jobs:
   # ── Tests ──────────────────────────────────────────────────────────────────
@@ -396,8 +416,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Log in to ECR
@@ -435,8 +454,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Run alembic upgrade head on EC2
@@ -496,8 +514,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Replace backend container on EC2
@@ -560,8 +577,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Build and copy frontend on EC2
@@ -707,7 +723,7 @@ cd /opt/chat-analyzer/repo
 git log --oneline -5
 
 # Replace PREV_SHA with the commit before the broken one
-REGISTRY=123456789012.dkr.ecr.us-east-1.amazonaws.com
+REGISTRY=123456789012.dkr.ecr.eu-central-1.amazonaws.com
 PREV_SHA=abc1234
 
 docker stop chat-analyzer-backend
@@ -749,9 +765,15 @@ Run this after the first successful pipeline run:
 
 ## Troubleshooting
 
+**CD job fails with `Could not assume role` or `Error: Credentials could not be loaded`**
+
+The OIDC trust is misconfigured. Check two things:
+1. The OIDC identity provider exists in IAM → Identity providers — the URL must be exactly `https://token.actions.githubusercontent.com`.
+2. The trust policy on `github-actions-chat-analyzer-role` has the correct `sub` condition. Go to IAM → Roles → the role → **Trust relationships** → **Edit trust policy** and verify the `StringLike` value matches your actual GitHub username and repo name (`repo:YOURUSER/chat-analyzer:*`). A typo here means the role refuses every request.
+
 **SSM command in CD job shows `AccessDenied`**
 
-The IAM user policy is missing the `ec2:instance/INSTANCE_ID` or `ssm:document/AWS-RunShellScript` resource ARN. Go to IAM → Users → `github-actions-chat-analyzer` → Permissions → click the policy → Edit → verify both ARNs in the `SSMDeploy` statement match your actual account ID and instance ID.
+The IAM role policy is missing the `ec2:instance/INSTANCE_ID` or `ssm:document/AWS-RunShellScript` resource ARN. Go to IAM → Roles → `github-actions-chat-analyzer-role` → Permissions → click the policy → Edit → verify both ARNs in the `SSMDeploy` statement match your actual account ID and instance ID.
 
 **`docker pull` fails on EC2 (migration or deploy job)**
 
