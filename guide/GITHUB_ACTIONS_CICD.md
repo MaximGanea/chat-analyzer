@@ -289,7 +289,7 @@ jobs:
 
       - name: Run pytest
         env:
-          DATABASE_URL: postgresql+asyncpg://test_user:test_pass@localhost:5432/test_db
+          TEST_DATABASE_URL: postgresql+asyncpg://test_user:test_pass@localhost:5432/test_db
           JWT_SECRET_KEY: ci-secret-not-for-production
           ENVIRONMENT: test
         run: pytest
@@ -381,7 +381,7 @@ jobs:
         working-directory: backend
       - name: Run pytest
         env:
-          DATABASE_URL: postgresql+asyncpg://test_user:test_pass@localhost:5432/test_db
+          TEST_DATABASE_URL: postgresql+asyncpg://test_user:test_pass@localhost:5432/test_db
           JWT_SECRET_KEY: ci-secret-not-for-production
           ENVIRONMENT: test
         run: pytest
