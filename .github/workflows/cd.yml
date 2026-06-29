@@ -319,7 +319,7 @@ jobs:
       - name: Health check
         run: |
           for i in $(seq 1 6); do
-            STATUS=$(curl -sf https://yourdomain.com/health \
+            STATUS=$(curl -sf https://temple-project.net/health \
               | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null \
               || echo "")
 
