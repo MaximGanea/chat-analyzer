@@ -30,7 +30,7 @@ You → git push / open PR
    ├── migrate        → SSM → EC2 → alembic upgrade head
    ├── deploy-backend → SSM → EC2 → docker pull + restart
    ├── deploy-frontend→ SSM → EC2 → git pull + npm build + copy
-   └── smoke-test     → curl https://yourdomain.com/health
+   └── smoke-test     → curl https://yourdomain.com/api/health
 ```
 
 **Why ECR instead of building on EC2?**
@@ -662,7 +662,7 @@ jobs:
       - name: Health check
         run: |
           for i in $(seq 1 6); do
-            STATUS=$(curl -sf https://yourdomain.com/health \
+            STATUS=$(curl -sf https://yourdomain.com/api/health \
               | python3 -c "import sys,json; print(json.load(sys.stdin).get('status',''))" 2>/dev/null \
               || echo "")
 
@@ -824,10 +824,10 @@ If the file exists, check that `DATABASE_URL` in it still has the correct RDS en
 
 **Smoke test fails but the app seems fine**
 
-The health endpoint URL in the workflow is hardcoded as `https://yourdomain.com/health`. Replace `yourdomain.com` with your actual domain. Also verify the endpoint manually:
+The health endpoint URL in the workflow is hardcoded as `https://yourdomain.com/api/health`. Replace `yourdomain.com` with your actual domain. Also verify the endpoint manually:
 
 ```bash
-curl https://yourdomain.com/health
+curl https://yourdomain.com/api/health
 ```
 
 If the endpoint returns `{"status":"ok"}` but the smoke test still fails, the container may need more than 5 seconds to start. Increase `sleep 5` to `sleep 15`.

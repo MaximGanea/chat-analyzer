@@ -51,6 +51,6 @@ async def root() -> dict[str, str]:
     return {"message": "Chat Analyzer API"}
 
 
-@app.get("/health")
+@app.get("/api/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}

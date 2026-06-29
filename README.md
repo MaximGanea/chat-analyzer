@@ -118,5 +118,5 @@ POST /api/auth/refresh    rotate refresh token, issue new access token
 POST /api/auth/logout     revoke session
 GET  /api/auth/me         current user info
 
-GET  /health              service and database health check
+GET  /api/health          service and database health check
 ```

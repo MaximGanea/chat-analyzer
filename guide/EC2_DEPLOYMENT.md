@@ -311,7 +311,7 @@ docker run -d --name chat-analyzer-backend --restart unless-stopped \
 ### Verify
 
 ```bash
-curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/api/health
 # {"status":"ok"}
 
 curl https://yourdomain.com/api/auth/
@@ -407,7 +407,7 @@ Run this from your **phone on mobile data** (not dev machine, not home WiFi):
 - [ ] Log in — redirected to dashboard
 - [ ] Hard-refresh — still logged in
 - [ ] Log out — redirected to login, protected routes inaccessible
-- [ ] `curl https://yourdomain.com/health` returns `{"status":"ok"}`
+- [ ] `curl https://yourdomain.com/api/health` returns `{"status":"ok"}`
 - [ ] Port 8000 NOT reachable: `curl http://YOUR_ELASTIC_IP:8000` times out or is refused
 - [ ] RDS not public: **Publicly accessible: No** in RDS console
 
@@ -420,7 +420,7 @@ Run this from your **phone on mobile data** (not dev machine, not home WiFi):
 ```bash
 docker ps                          # is the container running?
 docker logs chat-analyzer-backend  # any startup errors?
-curl http://127.0.0.1:8000/health  # does the backend respond locally?
+curl http://127.0.0.1:8000/api/health  # does the backend respond locally?
 ```
 
 **Refresh cookie not set (no `Set-Cookie` header)**
