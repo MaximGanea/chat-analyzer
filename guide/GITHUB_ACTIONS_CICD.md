@@ -128,16 +128,19 @@ Replace `ACCOUNT_ID` with your 12-digit AWS account ID (visible in the top-right
       "Resource": "arn:aws:ecr:eu-central-1:ACCOUNT_ID:repository/chat-analyzer-backend"
     },
     {
-      "Sid": "SSMDeploy",
+      "Sid": "SSMSend",
       "Effect": "Allow",
-      "Action": [
-        "ssm:SendCommand",
-        "ssm:GetCommandInvocation"
-      ],
+      "Action": "ssm:SendCommand",
       "Resource": [
         "arn:aws:ssm:eu-central-1::document/AWS-RunShellScript",
         "arn:aws:ec2:eu-central-1:ACCOUNT_ID:instance/INSTANCE_ID"
       ]
+    },
+    {
+      "Sid": "SSMPoll",
+      "Effect": "Allow",
+      "Action": "ssm:GetCommandInvocation",
+      "Resource": "*"
     }
   ]
 }
@@ -323,7 +326,11 @@ The `services:` block tells GitHub Actions to start a real PostgreSQL 17 contain
 `pydantic-settings` reads settings from environment variables. Setting `ENVIRONMENT=test` prevents any validators that check for `production` from enforcing production-only rules during the test run.
 
 **Why `cache: pip` and `cache: npm`?**
-These tell the setup actions to store the downloaded packages between runs. When `requirements-test.txt` or `package-lock.json` has not changed, packages are restored from cache instead of re-downloaded. Saves 30–60 seconds per run.
+These tell the setup actions to store the downloaded packages bRun IMAGE="$REGISTRY/$ECR_REPO:$SHA"
+SSM command ID: 415bfb98-a960-4a1c-a1e8-52f74f153631
+
+Error: RROR]: Waiter CommandExecuted failed: An error occurred (AccessDeniedException): User: arn:aws:sts::047719659761:assumed-role/github-actions-chat-analyzer-role/GitHubActions is not authorized to perform: ssm:GetCommandInvocation on resource: arn:aws:ssm:eu-central-1:047719659761:* because no identity-based policy allows the ssm:GetCommandInvocation action
+Error: Process completed with exit code 255.etween runs. When `requirements-test.txt` or `package-lock.json` has not changed, packages are restored from cache instead of re-downloaded. Saves 30–60 seconds per run.
 
 ---
 
@@ -485,7 +492,7 @@ jobs:
 
           aws ssm wait command-executed \
             --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID"
+            --instance-id "$INSTANCE_ID" || true
 
           STATUS=$(aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
@@ -545,7 +552,7 @@ jobs:
 
           aws ssm wait command-executed \
             --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID"
+            --instance-id "$INSTANCE_ID" || true
 
           STATUS=$(aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
@@ -590,7 +597,7 @@ jobs:
             "DocumentName": "AWS-RunShellScript",
             "Parameters": {
               "commands": [
-                "cd /opt/chat-analyzer/repo && git pull && cd frontend && npm ci && VITE_API_URL= npm run build && rm -rf /var/www/html/* && cp -r dist/. /var/www/html/ && chown -R nginx:nginx /var/www/html && chmod -R 755 /var/www/html"
+                "git config --global --add safe.directory /opt/chat-analyzer/repo && cd /opt/chat-analyzer/repo && git pull && cd frontend && npm ci && VITE_API_URL= npm run build && rm -rf /var/www/html/* && cp -r dist/. /var/www/html/ && chown -R nginx:nginx /var/www/html && chmod -R 755 /var/www/html"
               ]
             }
           }
@@ -604,7 +611,7 @@ jobs:
 
           aws ssm wait command-executed \
             --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID"
+            --instance-id "$INSTANCE_ID" || true
 
           STATUS=$(aws ssm get-command-invocation \
             --command-id "$COMMAND_ID" \
