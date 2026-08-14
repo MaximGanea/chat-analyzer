@@ -42,7 +42,7 @@
 - No correlation/request ID. When a user reports an error, you need a trace ID that appears in both the HTTP response and the log line.
 - No rate limiting. `slowapi` (FastAPI-native, backed by Redis) should wrap the login and register endpoints.
 - No global exception handler. Unhandled exceptions produce FastAPI's default 500 response, which may leak stack traces depending on the `debug` setting.
-- The health endpoint at `GET /health` returns `{"status": "ok"}` without checking database connectivity. A real health check should run `SELECT 1` so load balancers can route around a broken DB connection.
+- The health endpoint at `GET ,k` returns `{"status": "ok"}` without checking database connectivity. A real health check should run `SELECT 1` so load balancers can route around a broken DB connection.
 
 **Impact:** Without request logging and a proper health check, a production incident is extremely difficult to diagnose. Without rate limiting, the authentication system is open to automated attacks.
 

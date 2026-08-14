@@ -234,74 +234,62 @@ jobs:
           fi
 
   # ── Deploy frontend ────────────────────────────────────────────────────────
-  # Runs in parallel with migrate + deploy-backend — frontend and backend are
-  # independent. Both must finish before the smoke test runs.
-  # Note: this step will be replaced by S3 + CloudFront in Phase 7.
+  # Builds on the runner and uploads to S3, where CloudFront serves it. Runs in
+  # parallel with the whole backend chain — it needs neither the Docker image
+  # nor EC2, only green tests. Both deploys must finish before the smoke test.
 
   deploy-frontend:
-    needs: build-and-push
+    needs: [test-backend, test-frontend]
     runs-on: ubuntu-latest
     environment: production
 
     steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install and build
+        run: npm ci && VITE_API_URL= npm run build
+        working-directory: frontend
+
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Build and copy frontend on EC2
-        env:
-          INSTANCE_ID: ${{ secrets.EC2_INSTANCE_ID }}
+      # Assets carry a content hash in their filename, so a given URL always
+      # maps to the same bytes and can be cached forever. Uploaded before
+      # index.html: the new HTML must never reference files not yet in S3.
+      - name: Sync hashed assets (long cache)
         run: |
-          cat > /tmp/ssm-deploy-frontend.json << ENDJSON
-          {
-            "InstanceIds": ["${INSTANCE_ID}"],
-            "DocumentName": "AWS-RunShellScript",
-            "Parameters": {
-              "commands": [
-                "set -e",
-                "export HOME=/root",
-                "git config --global --add safe.directory /opt/chat-analyzer/repo",
-                "cd /opt/chat-analyzer/repo",
-                "git pull",
-                "cd frontend",
-                "npm ci",
-                "VITE_API_URL= npm run build",
-                "rm -rf /var/www/html/*",
-                "cp -r dist/. /var/www/html/",
-                "chown -R nginx:nginx /var/www/html",
-                "chmod -R 755 /var/www/html"
-              ]
-            }
-          }
-          ENDJSON
+          aws s3 sync frontend/dist/ s3://chat-analyzer-frontend \
+            --delete \
+            --exclude "index.html" \
+            --cache-control "public, max-age=31536000, immutable"
 
-          COMMAND_ID=$(aws ssm send-command \
-            --cli-input-json "file:///tmp/ssm-deploy-frontend.json" \
-            --query 'Command.CommandId' --output text)
+      # index.html keeps its name but changes every build, and it is what points
+      # at the current asset filenames. Cached even briefly, browsers would ask
+      # for JS bundles that --delete has already removed.
+      # Separate pass because `aws s3 sync` applies one --cache-control per run.
+      - name: Sync index.html (no cache)
+        run: |
+          aws s3 sync frontend/dist/ s3://chat-analyzer-frontend \
+            --exclude "*" \
+            --include "index.html" \
+            --cache-control "no-cache"
 
-          echo "SSM command ID: $COMMAND_ID"
-
-          aws ssm wait command-executed \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" || true
-
-          STATUS=$(aws ssm get-command-invocation \
-            --command-id "$COMMAND_ID" \
-            --instance-id "$INSTANCE_ID" \
-            --query 'Status' --output text)
-
-          echo "Frontend deploy status: $STATUS"
-
-          if [ "$STATUS" != "Success" ]; then
-            echo "--- stderr from EC2 ---"
-            aws ssm get-command-invocation \
-              --command-id "$COMMAND_ID" \
-              --instance-id "$INSTANCE_ID" \
-              --query 'StandardErrorContent' --output text
-            exit 1
-          fi
+      # Only index.html: hashed assets get new filenames, so old cached copies
+      # simply stop being requested. Keeps us inside the 1000 free paths/month.
+      - name: Invalidate CloudFront index.html
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/index.html"
 
   # ── Smoke test ─────────────────────────────────────────────────────────────
   # Polls the health endpoint after both deploys finish. If the backend did not
