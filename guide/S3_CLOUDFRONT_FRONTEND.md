@@ -509,8 +509,8 @@ curl -I https://temple-project.net
 Test that API calls still work:
 
 ```bash
-curl https://temple-project.net/api/auth/
-# 404 or 405 — not a connection error
+curl -i https://temple-project.net/api/health
+# 200 {"status":"ok"}
 ```
 
 ---
@@ -582,8 +582,8 @@ Verify nginx still works with just the API proxy config after removing certbot:
 ```bash
 sudo nginx -t
 sudo systemctl status nginx
-curl http://127.0.0.1/api/auth/
-# 404 or 405 — not a connection error
+curl -i http://127.0.0.1/api/health
+# 200 {"status":"ok"} — proves nginx reached the backend container
 ```
 
 ### Remove /var/www/html
@@ -633,7 +633,7 @@ Run from your phone on mobile data after the first successful CD pipeline run:
 - [ ] `curl -I https://temple-project.net` shows `Cache-Control: no-cache` for `index.html`
 - [ ] Full flow: register → login → hard refresh → still logged in → logout
 - [ ] Direct navigation to `/dashboard` works — React Router handles the route (SPA routing via the `spa-router` CloudFront Function)
-- [ ] `curl https://temple-project.net/api/auth/` returns 404 or 405 — not a connection error (API routing through CloudFront → EC2 works)
+- [ ] `curl -i https://temple-project.net/api/health` returns `200 {"status":"ok"}` (API routing through CloudFront → EC2 works)
 - [ ] `curl http://YOUR_ELASTIC_IP` no longer returns the React app (EC2 no longer serves static files)
 - [ ] ECR image appears in ECR console tagged with the merge commit SHA
 - [ ] GitHub Actions pipeline: all jobs green
@@ -700,11 +700,11 @@ sudo systemctl reload nginx
 
 ```bash
 # through CloudFront — still works
-curl -i https://temple-project.net/api/auth/
-# 404 or 405
+curl -i https://temple-project.net/api/health
+# 200 {"status":"ok"}
 
 # straight to the origin — now blocked
-curl -i http://origin.temple-project.net/api/auth/
+curl -i http://origin.temple-project.net/api/health
 # 403
 ```
 
