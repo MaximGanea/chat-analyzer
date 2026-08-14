@@ -2,15 +2,15 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_DB: chat_analyzer
-      POSTGRES_USER: chat_user
-      POSTGRES_PASSWORD: chat_pass
+      POSTGRES_DB: temple_project
+      POSTGRES_USER: temple_user
+      POSTGRES_PASSWORD: temple_pass
     ports:
       - "5432:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U chat_user -d chat_analyzer"]
+      test: ["CMD-SHELL", "pg_isready -U temple_user -d temple_project"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -25,6 +25,8 @@ services:
       - ./backend:/app          # hot-reload: mount source files
     env_file:
       - ./backend/.env
+    environment:
+      - RUN_MIGRATIONS=1        # dev only: prod runs migrations as a separate CD job
     depends_on:
       postgres:
         condition: service_healthy

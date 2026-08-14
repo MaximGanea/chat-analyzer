@@ -16,7 +16,7 @@ limiter._enabled = False
 
 TEST_DATABASE_URL = os.getenv(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://chat_user:chat_pass@localhost:5432/chat_analyzer_test",
+    "postgresql+asyncpg://temple_user:temple_pass@localhost:5432/temple_project_test",
 )
 # psycopg (v3 sync) is already in requirements.txt — use it for schema management
 # so we avoid any async event-loop concerns at the session level.

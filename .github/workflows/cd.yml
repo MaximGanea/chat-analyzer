@@ -6,7 +6,7 @@ on:
 
 env:
   AWS_REGION: eu-central-1
-  ECR_REPO: chat-analyzer-backend
+  ECR_REPO: temple-project-backend
 
 permissions:
   id-token: write   # required for OIDC token request
@@ -138,7 +138,7 @@ jobs:
                 "set -e",
                 "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${REGISTRY}",
                 "docker pull ${IMAGE}",
-                "docker run --rm --env-file /opt/chat-analyzer/repo/backend/.env ${IMAGE} alembic upgrade head"
+                "docker run --rm --env-file /opt/temple-project/repo/backend/.env ${IMAGE} alembic upgrade head"
               ]
             }
           }
@@ -199,9 +199,9 @@ jobs:
             "Parameters": {
               "commands": [
                 "set -e",
-                "docker stop chat-analyzer-backend || true",
-                "docker rm chat-analyzer-backend || true",
-                "docker run -d --name chat-analyzer-backend --restart unless-stopped --env-file /opt/chat-analyzer/repo/backend/.env -p 127.0.0.1:8000:8000 ${IMAGE}"
+                "docker stop temple-project-backend || true",
+                "docker rm temple-project-backend || true",
+                "docker run -d --name temple-project-backend --restart unless-stopped --env-file /opt/temple-project/repo/backend/.env -p 127.0.0.1:8000:8000 ${IMAGE}"
               ]
             }
           }
@@ -267,7 +267,7 @@ jobs:
       # index.html: the new HTML must never reference files not yet in S3.
       - name: Sync hashed assets (long cache)
         run: |
-          aws s3 sync frontend/dist/ s3://chat-analyzer-frontend \
+          aws s3 sync frontend/dist/ s3://temple-project-frontend \
             --delete \
             --exclude "index.html" \
             --cache-control "public, max-age=31536000, immutable"
@@ -278,7 +278,7 @@ jobs:
       # Separate pass because `aws s3 sync` applies one --cache-control per run.
       - name: Sync index.html (no cache)
         run: |
-          aws s3 sync frontend/dist/ s3://chat-analyzer-frontend \
+          aws s3 sync frontend/dist/ s3://temple-project-frontend \
             --exclude "*" \
             --include "index.html" \
             --cache-control "no-cache"

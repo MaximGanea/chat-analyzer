@@ -48,7 +48,7 @@ app.include_router(admin_router, prefix="/api")
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    return {"message": "Chat Analyzer API"}
+    return {"message": "Temple Project API"}
 
 
 @app.get("/api/health")

@@ -2,7 +2,7 @@
 set -e
 
 # Extract host from DATABASE_URL so this works with both Docker Compose (postgres)
-# and RDS (e.g. chat-analyzer-prod.xxxx.eu-central-1.rds.amazonaws.com)
+# and RDS (e.g. temple-project-prod.xxxx.eu-central-1.rds.amazonaws.com)
 DB_HOST=$(python3 -c "
 import os, urllib.parse
 url = os.environ.get('DATABASE_URL', '')
@@ -27,8 +27,14 @@ except Exception:
     sleep 1
 done
 
-echo "Applying migrations..."
-alembic upgrade head
+# Migrations are a deploy step, not a startup step: two containers starting at
+# once would both run `alembic upgrade head` against the same database. In
+# production the `migrate` job in cd.yml runs it as a one-off before the new
+# container starts. Local development opts back in via RUN_MIGRATIONS=1.
+if [ "$RUN_MIGRATIONS" = "1" ]; then
+    echo "RUN_MIGRATIONS=1 — applying migrations..."
+    alembic upgrade head
+fi
 
 echo "Starting: $@"
 exec "$@"

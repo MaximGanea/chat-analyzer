@@ -65,7 +65,7 @@ ECR (Elastic Container Registry) is a private Docker registry inside your AWS ac
 
 1. AWS Console → **ECR** → **Get started** (or **Create repository**)
 2. Visibility: **Private**
-3. Repository name: `chat-analyzer-backend`
+3. Repository name: `temple-project-backend`
 4. **Image tag mutability:** leave as **Mutable** (default) — this lets the `:latest` tag be overwritten on each push, which is what the CD workflow does
 5. **Encryption:** leave as **AES-256** (default)
 6. → **Create repository**
@@ -75,7 +75,7 @@ ECR (Elastic Container Registry) is a private Docker registry inside your AWS ac
 After creation, click the repository name. In the top right, note the **URI** — it looks like:
 
 ```
-123456789012.dkr.ecr.eu-central-1.amazonaws.com/chat-analyzer-backend
+123456789012.dkr.ecr.eu-central-1.amazonaws.com/temple-project-backend
 ```
 
 The part before the first `/` (`123456789012.dkr.ecr.eu-central-1.amazonaws.com`) is your **registry URL**. You will need it in later steps.
@@ -125,7 +125,7 @@ Replace `ACCOUNT_ID` with your 12-digit AWS account ID (visible in the top-right
         "ecr:CompleteLayerUpload",
         "ecr:DescribeRepositories"
       ],
-      "Resource": "arn:aws:ecr:eu-central-1:ACCOUNT_ID:repository/chat-analyzer-backend"
+      "Resource": "arn:aws:ecr:eu-central-1:ACCOUNT_ID:repository/temple-project-backend"
     },
     {
       "Sid": "SSMSend",
@@ -146,13 +146,13 @@ Replace `ACCOUNT_ID` with your 12-digit AWS account ID (visible in the top-right
 }
 ```
 
-→ **Next** → Name: `github-actions-chat-analyzer-policy` → **Create policy**
+→ **Next** → Name: `github-actions-temple-project-policy` → **Create policy**
 
 **Why are both resource ARNs needed in `SSMDeploy`?**
 AWS SSM requires you to grant permission on both the SSM document being used (`AWS-RunShellScript`) and the specific EC2 instance. Without both, the command is denied. Listing the exact instance ID also means these credentials cannot be used to run commands on any other instance in your account.
 
 **Why is `ECRPush` scoped to one repository?**
-If these credentials are ever compromised, an attacker can only push to `chat-analyzer-backend`. They cannot touch other ECR repos, cannot reach RDS, cannot access S3 — nothing outside what is listed here.
+If these credentials are ever compromised, an attacker can only push to `temple-project-backend`. They cannot touch other ECR repos, cannot reach RDS, cannot access S3 — nothing outside what is listed here.
 
 ### 2.3 Create the IAM role
 
@@ -163,12 +163,12 @@ IAM → **Roles** → **Create role**
 3. Audience: `sts.amazonaws.com`
 4. Fill in the GitHub fields:
    - **GitHub organization:** your GitHub username (for personal accounts this is just your username, e.g. `MaximGanea`)
-   - **GitHub repository:** `chat-analyzer`
+   - **GitHub repository:** `temple-project`
    - **GitHub branch:** leave blank (allows all branches and PR events)
-5. → **Next** → search for `github-actions-chat-analyzer-policy` → check it → **Next**
-6. Role name: `github-actions-chat-analyzer-role` → **Create role**
+5. → **Next** → search for `github-actions-temple-project-policy` → check it → **Next**
+6. Role name: `github-actions-temple-project-role` → **Create role**
 
-After creation, click the role name and copy the **ARN** shown at the top of the page — it looks like `arn:aws:iam::123456789012:role/github-actions-chat-analyzer-role`. You will need it in Step 5.
+After creation, click the role name and copy the **ARN** shown at the top of the page — it looks like `arn:aws:iam::123456789012:role/github-actions-temple-project-role`. You will need it in Step 5.
 
 **Why fill in the repository?**
 AWS uses these fields to build a trust condition scoped to your specific repo. Without it, any GitHub Actions workflow in any repository on GitHub could assume this role and push images to your ECR. Leaving branch blank is intentional — it allows both push-to-main (CD) and pull-request (CI) events.
@@ -177,9 +177,9 @@ AWS uses these fields to build a trust condition scoped to your specific repo. W
 
 ## Step 3 — Grant EC2 permission to pull from ECR
 
-When GitHub Actions tells EC2 to run `docker pull`, EC2 authenticates with ECR using its IAM role (`chat-analyzer-ec2-ssm-role`). You need to add ECR read permission to that role.
+When GitHub Actions tells EC2 to run `docker pull`, EC2 authenticates with ECR using its IAM role (`temple-project-ec2-ssm-role`). You need to add ECR read permission to that role.
 
-1. IAM → **Roles** → search for `chat-analyzer-ec2-ssm-role` → click it
+1. IAM → **Roles** → search for `temple-project-ec2-ssm-role` → click it
 2. **Add permissions** → **Attach policies**
 3. Search for `AmazonEC2ContainerRegistryReadOnly` → check it → **Add permissions**
 
@@ -193,7 +193,7 @@ Verify both policies are now listed under **Permissions policies**:
 
 Before wiring this into GitHub Actions, confirm EC2 can actually reach ECR. Do this from the SSM Session Manager browser terminal — the same way you deployed in Phase 5.
 
-EC2 → Instances → `chat-analyzer-prod` → **Connect** → **Session Manager** → **Connect**
+EC2 → Instances → `temple-project-prod` → **Connect** → **Session Manager** → **Connect**
 
 In the terminal:
 
@@ -238,10 +238,10 @@ Still on the `production` environment page, scroll to **Environment secrets** �
 
 | Secret name | Value |
 |---|---|
-| `AWS_ROLE_ARN` | The role ARN from Step 2.3 (e.g., `arn:aws:iam::123456789012:role/github-actions-chat-analyzer-role`) |
+| `AWS_ROLE_ARN` | The role ARN from Step 2.3 (e.g., `arn:aws:iam::123456789012:role/github-actions-temple-project-role`) |
 | `EC2_INSTANCE_ID` | Your EC2 instance ID (e.g., `i-0abc123def456`) |
 
-Find your instance ID: EC2 → Instances → click `chat-analyzer-prod` → **Instance ID** field.
+Find your instance ID: EC2 → Instances → click `temple-project-prod` → **Instance ID** field.
 
 ---
 
@@ -329,7 +329,7 @@ The `services:` block tells GitHub Actions to start a real PostgreSQL 17 contain
 These tell the setup actions to store the downloaded packages bRun IMAGE="$REGISTRY/$ECR_REPO:$SHA"
 SSM command ID: 415bfb98-a960-4a1c-a1e8-52f74f153631
 
-Error: RROR]: Waiter CommandExecuted failed: An error occurred (AccessDeniedException): User: arn:aws:sts::047719659761:assumed-role/github-actions-chat-analyzer-role/GitHubActions is not authorized to perform: ssm:GetCommandInvocation on resource: arn:aws:ssm:eu-central-1:047719659761:* because no identity-based policy allows the ssm:GetCommandInvocation action
+Error: RROR]: Waiter CommandExecuted failed: An error occurred (AccessDeniedException): User: arn:aws:sts::047719659761:assumed-role/github-actions-temple-project-role/GitHubActions is not authorized to perform: ssm:GetCommandInvocation on resource: arn:aws:ssm:eu-central-1:047719659761:* because no identity-based policy allows the ssm:GetCommandInvocation action
 Error: Process completed with exit code 255.etween runs. When `requirements-test.txt` or `package-lock.json` has not changed, packages are restored from cache instead of re-downloaded. Saves 30–60 seconds per run.
 
 ---
@@ -349,7 +349,7 @@ on:
 
 env:
   AWS_REGION: eu-central-1
-  ECR_REPO: chat-analyzer-backend
+  ECR_REPO: temple-project-backend
 
 permissions:
   id-token: write   # required for OIDC token request
@@ -481,7 +481,7 @@ jobs:
                 "set -e",
                 "aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${REGISTRY}",
                 "docker pull ${IMAGE}",
-                "docker run --rm --env-file /opt/chat-analyzer/repo/backend/.env ${IMAGE} alembic upgrade head"
+                "docker run --rm --env-file /opt/temple-project/repo/backend/.env ${IMAGE} alembic upgrade head"
               ]
             }
           }
@@ -542,9 +542,9 @@ jobs:
             "Parameters": {
               "commands": [
                 "set -e",
-                "docker stop chat-analyzer-backend || true",
-                "docker rm chat-analyzer-backend || true",
-                "docker run -d --name chat-analyzer-backend --restart unless-stopped --env-file /opt/chat-analyzer/repo/backend/.env -p 127.0.0.1:8000:8000 ${IMAGE}"
+                "docker stop temple-project-backend || true",
+                "docker rm temple-project-backend || true",
+                "docker run -d --name temple-project-backend --restart unless-stopped --env-file /opt/temple-project/repo/backend/.env -p 127.0.0.1:8000:8000 ${IMAGE}"
               ]
             }
           }
@@ -605,8 +605,8 @@ jobs:
               "commands": [
                 "set -e",
                 "export HOME=/root",
-                "git config --global --add safe.directory /opt/chat-analyzer/repo",
-                "cd /opt/chat-analyzer/repo",
+                "git config --global --add safe.directory /opt/temple-project/repo",
+                "cd /opt/temple-project/repo",
                 "git pull",
                 "cd frontend",
                 "npm ci",
@@ -727,8 +727,8 @@ Once CI passes, merge the PR. The push to main triggers the CD workflow. Go to *
 > **Private repository note:** The `deploy-frontend` job runs `git pull` on EC2. If your repo is private, EC2 needs credentials to pull from GitHub. The quickest fix: generate a GitHub Personal Access Token (read-only, `repo` scope) and update the remote in the SSM terminal:
 >
 > ```bash
-> cd /opt/chat-analyzer/repo
-> git remote set-url origin https://YOUR_PAT@github.com/youruser/chat-analyzer.git
+> cd /opt/temple-project/repo
+> git remote set-url origin https://YOUR_PAT@github.com/youruser/temple-project.git
 > ```
 
 ---
@@ -743,20 +743,20 @@ Open SSM Session Manager on EC2 and run:
 
 ```bash
 # Find the previous SHA
-cd /opt/chat-analyzer/repo
+cd /opt/temple-project/repo
 git log --oneline -5
 
 # Replace PREV_SHA with the commit before the broken one
 REGISTRY=123456789012.dkr.ecr.eu-central-1.amazonaws.com
 PREV_SHA=abc1234
 
-docker stop chat-analyzer-backend
-docker rm chat-analyzer-backend
-docker pull $REGISTRY/chat-analyzer-backend:$PREV_SHA
-docker run -d --name chat-analyzer-backend --restart unless-stopped \
-  --env-file /opt/chat-analyzer/repo/backend/.env \
+docker stop temple-project-backend
+docker rm temple-project-backend
+docker pull $REGISTRY/temple-project-backend:$PREV_SHA
+docker run -d --name temple-project-backend --restart unless-stopped \
+  --env-file /opt/temple-project/repo/backend/.env \
   -p 127.0.0.1:8000:8000 \
-  $REGISTRY/chat-analyzer-backend:$PREV_SHA
+  $REGISTRY/temple-project-backend:$PREV_SHA
 ```
 
 This works because the previous image is still in ECR with its SHA tag. No rebuild needed.
@@ -780,8 +780,8 @@ Run this after the first successful pipeline run:
 - [ ] Open a PR on a feature branch → both CI jobs appear and pass → PR unblocked
 - [ ] Break a test intentionally on a branch → CI fails → PR cannot merge
 - [ ] Merge the PR → CD pipeline triggers → all 6 jobs pass
-- [ ] ECR console shows the image tagged with the merge commit SHA: ECR → `chat-analyzer-backend` → Images
-- [ ] In SSM session on EC2: `docker ps` shows `chat-analyzer-backend` running the new SHA-tagged image
+- [ ] ECR console shows the image tagged with the merge commit SHA: ECR → `temple-project-backend` → Images
+- [ ] In SSM session on EC2: `docker ps` shows `temple-project-backend` running the new SHA-tagged image
 - [ ] Smoke test in the pipeline passes: health endpoint returns `{"status":"ok"}`
 - [ ] Full flow from your phone: register → login → hard refresh → logout
 
@@ -793,15 +793,15 @@ Run this after the first successful pipeline run:
 
 The OIDC trust is misconfigured. Check two things:
 1. The OIDC identity provider exists in IAM → Identity providers — the URL must be exactly `https://token.actions.githubusercontent.com`.
-2. The trust policy on `github-actions-chat-analyzer-role` has the correct `sub` condition. Go to IAM → Roles → the role → **Trust relationships** → **Edit trust policy** and verify the `StringLike` value matches your actual GitHub username and repo name (`repo:YOURUSER/chat-analyzer:*`). A typo here means the role refuses every request.
+2. The trust policy on `github-actions-temple-project-role` has the correct `sub` condition. Go to IAM → Roles → the role → **Trust relationships** → **Edit trust policy** and verify the `StringLike` value matches your actual GitHub username and repo name (`repo:YOURUSER/temple-project:*`). A typo here means the role refuses every request.
 
 **SSM command in CD job shows `AccessDenied`**
 
-The IAM role policy is missing the `ec2:instance/INSTANCE_ID` or `ssm:document/AWS-RunShellScript` resource ARN. Go to IAM → Roles → `github-actions-chat-analyzer-role` → Permissions → click the policy → Edit → verify both ARNs in the `SSMDeploy` statement match your actual account ID and instance ID.
+The IAM role policy is missing the `ec2:instance/INSTANCE_ID` or `ssm:document/AWS-RunShellScript` resource ARN. Go to IAM → Roles → `github-actions-temple-project-role` → Permissions → click the policy → Edit → verify both ARNs in the `SSMDeploy` statement match your actual account ID and instance ID.
 
 **`docker pull` fails on EC2 (migration or deploy job)**
 
-EC2 cannot authenticate with ECR. Check that `AmazonEC2ContainerRegistryReadOnly` is attached to `chat-analyzer-ec2-ssm-role` (IAM → Roles → the role → Permissions tab). Open an SSM session and re-run the Step 4 verification command.
+EC2 cannot authenticate with ECR. Check that `AmazonEC2ContainerRegistryReadOnly` is attached to `temple-project-ec2-ssm-role` (IAM → Roles → the role → Permissions tab). Open an SSM session and re-run the Step 4 verification command.
 
 **`git pull` fails in `deploy-frontend` (private repo)**
 
@@ -813,11 +813,11 @@ The stderr is printed by the `if [ "$STATUS" != "Success" ]` block in the workfl
 
 **Migration step fails with `could not connect to server`**
 
-The migration container cannot reach RDS. The `--env-file` path in the `docker run` command points to `/opt/chat-analyzer/repo/backend/.env` — verify that file exists on EC2:
+The migration container cannot reach RDS. The `--env-file` path in the `docker run` command points to `/opt/temple-project/repo/backend/.env` — verify that file exists on EC2:
 
 ```bash
 # In SSM session on EC2
-ls -la /opt/chat-analyzer/repo/backend/.env
+ls -la /opt/temple-project/repo/backend/.env
 ```
 
 If the file exists, check that `DATABASE_URL` in it still has the correct RDS endpoint.

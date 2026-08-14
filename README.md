@@ -1,4 +1,4 @@
-# chat-analyzer
+# temple-project
 
 A full-stack web application for analyzing chat conversations. Currently in active development — the auth layer is complete; chat analysis features are upcoming.
 
@@ -17,10 +17,10 @@ Create `backend/.env` before starting:
 
 ```env
 ENVIRONMENT=development
-APP_NAME=chat-analyzer
+APP_NAME=temple-project
 APP_DEBUG=false
 
-DATABASE_URL=postgresql+asyncpg://chat_user:chat_pass@postgres:5432/chat_analyzer
+DATABASE_URL=postgresql+asyncpg://temple_user:temple_pass@postgres:5432/temple_project
 
 JWT_SECRET_KEY=change-me-in-dev
 JWT_ALGORITHM=HS256
@@ -51,7 +51,7 @@ First-time setup:
 ```bash
 docker compose up --build -d
 
-docker compose exec postgres psql -U chat_user -d chat_analyzer -c "CREATE DATABASE chat_analyzer_test;"
+docker compose exec postgres psql -U temple_user -d temple_project -c "CREATE DATABASE temple_project_test;"
 
 cd backend
 python -m venv venv
@@ -86,7 +86,7 @@ npm test           # watch mode
 ## Project structure
 
 ```
-chat-analyzer/
+temple-project/
 ├── backend/
 │   ├── app/
 │   │   ├── api/          # route handlers (auth, admin)
@@ -105,8 +105,9 @@ chat-analyzer/
 │   │   └── app/          # Redux store
 │   └── Dockerfile
 ├── docs/
-├── docker-compose.yml
-└── docker-compose.prod.yml
+├── guide/                # PRODUCTION_RESTORE · GITHUB_ACTIONS_CICD ·
+│                         # S3_CLOUDFRONT_FRONTEND
+└── docker-compose.yml    # local development only
 ```
 
 ## API endpoints

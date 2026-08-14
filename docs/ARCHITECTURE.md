@@ -1,6 +1,6 @@
 # Architecture
 
-**Project:** chat-analyzer  
+**Project:** temple-project  
 **Stack:** FastAPI · React 19 · PostgreSQL 17 · Docker Compose  
 **Last reviewed:** 2026-06-08
 
@@ -11,7 +11,7 @@
 ### 1.1 Directory Structure
 
 ```
-chat-analyzer/
+temple-project/
 ├── backend/               # FastAPI application
 │   ├── app/
 │   │   ├── main.py        # FastAPI app factory, CORS, router registration
@@ -36,10 +36,9 @@ chat-analyzer/
 │   │   │   └── tokenService.js  # In-memory access token
 │   │   ├── components/    # ProtectedRoute, AdminRoute
 │   │   └── pages/         # Login, Register, Dashboard, Admin
-│   ├── Dockerfile         # Multi-stage: dev (Vite) + prod (nginx)
-│   └── nginx.conf         # SPA routing + API proxy + caching
+│   └── Dockerfile         # dev stage only (Vite HMR); prod build runs in CI → S3
 ├── docker-compose.yml     # Development compose (BACKEND_TARGET=gunicorn for prod-like local)
-└── docker-compose.prod.yml# Production compose
+└── docker-compose.yml     # Local development only
 ```
 
 ### 1.2 Authentication Model

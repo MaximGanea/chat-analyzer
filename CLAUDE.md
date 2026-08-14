@@ -1,10 +1,12 @@
-# CLAUDE.md — chat-analyzer
+# CLAUDE.md — temple-project
 
 This file is read automatically by Claude Code at session start.
 
 ## Project
 
 Three-tier web app: FastAPI backend + React 19 SPA + PostgreSQL. Current scope: production-ready auth layer. Chat analysis features are not yet built.
+
+**Production topology:** Route 53 → CloudFront → S3 (React build, private bucket via OAC) for `/*`, and → `origin.temple-project.net` → EC2 nginx :80 → backend container :8000 for `/api/*`. PostgreSQL is RDS in a private subnet. Deploys run from `.github/workflows/cd.yml` on push to `master`, authenticating to AWS via OIDC.
 
 **Stack:** FastAPI · async SQLAlchemy + asyncpg · Alembic · pydantic-settings · PyJWT · passlib[argon2] · React 19 · Redux Toolkit · React Router v7 · Axios · Vite · gunicorn + uvicorn.workers.UvicornWorker
 
@@ -33,9 +35,9 @@ Backend: `http://localhost:8000` — Frontend: `http://localhost:5173`
 | In-memory token store | `frontend/src/services/tokenService.js` |
 | Redux auth slice + thunks | `frontend/src/features/auth/authSlice.js` |
 | Route guards | `frontend/src/features/auth/components/` |
-| nginx config | `frontend/nginx.conf` |
 | Dev compose | `docker-compose.yml` |
-| Prod compose | `docker-compose.prod.yml` |
+| CD pipeline | `.github/workflows/cd.yml` |
+| Deployment guides | `guide/` |
 
 ## Auth architecture
 
@@ -50,7 +52,7 @@ Backend: `http://localhost:8000` — Frontend: `http://localhost:5173`
 | Target | Workers | Reload | Used by |
 |--------|---------|--------|---------|
 | `dev` | 1 | yes | `docker-compose.yml` |
-| `prod` | 2 | no | `docker-compose.prod.yml` |
+| `prod` | 2 | no | `docker run` on EC2, image from ECR (`cd.yml`) |
 
 ---
 
@@ -64,7 +66,7 @@ Backend: `http://localhost:8000` — Frontend: `http://localhost:5173`
 - Never log passwords, tokens, or any secret material — not even partially.
 - `ENVIRONMENT=production` must be set in prod. The refresh cookie's `secure=True` flag depends on it (`auth.py`).
 - New API routes go under `prefix="/api"` — do not change the prefix convention.
-- Alembic migrations run as a separate one-off step before deploying, not inside `entrypoint.sh` (race condition with multiple replicas).
+- Alembic migrations run as a separate one-off step before deploying, not inside `entrypoint.sh` (race condition with multiple replicas). `entrypoint.sh` only runs them when `RUN_MIGRATIONS=1`, which `docker-compose.yml` sets for local dev; production uses the `migrate` job in `cd.yml`.
 - Password fields must enforce `min_length=8`, `max_length=128` at the schema level (`schemas.py`).
 
 ## Frontend rules

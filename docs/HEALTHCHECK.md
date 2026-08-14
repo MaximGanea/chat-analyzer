@@ -48,7 +48,7 @@ Docker tracks three container states:
 
 Compose and orchestrators (ECS, Kubernetes via liveness/readiness probes, Swarm) can act on `unhealthy` — restarting the container or stopping traffic to it.
 
-The `docker-compose.prod.yml` backend service has `restart: unless-stopped`, so Docker will automatically restart a container that crashes, but **`restart` is independent of the healthcheck** — a process can be running but `unhealthy`, and Docker will not restart it on healthcheck failure alone without an orchestrator policy (e.g., `--health-action restart` in standalone Docker, or the restart policy in Swarm/ECS).
+The production container is started by `cd.yml` with `--restart unless-stopped`, so Docker will automatically restart a container that crashes, but **`restart` is independent of the healthcheck** — a process can be running but `unhealthy`, and Docker will not restart it on healthcheck failure alone without an orchestrator policy (e.g., `--health-action restart` in standalone Docker, or the restart policy in Swarm/ECS).
 
 ---
 
@@ -70,7 +70,7 @@ curl http://localhost:8000/health
 docker ps --format "table {{.Names}}\t{{.Status}}"
 
 # detailed probe history (last 5 results, exit codes, output)
-docker inspect --format='{{json .State.Health}}' chat-analyzer-backend-1 | jq
+docker inspect --format='{{json .State.Health}}' temple-project-backend-1 | jq
 ```
 
 The `.State.Health.Log` array shows the last N probe results with `ExitCode`, `Output`, and `Start`/`End` timestamps.
@@ -80,8 +80,8 @@ The `.State.Health.Log` array shows the last N probe results with `ExitCode`, `O
 Start only the prod target, then watch status in real time:
 
 ```bash
-docker compose -f docker-compose.prod.yml up --build -d backend
-watch -n 2 "docker inspect --format='{{.State.Health.Status}}' chat-analyzer-backend-1"
+docker build -t temple-project-backend:latest ./backend --target prod
+watch -n 2 "docker inspect --format='{{.State.Health.Status}}' temple-project-backend-1"
 ```
 
 Within 15 seconds (start-period) the status should move from `starting` to `healthy`.
@@ -92,10 +92,10 @@ Stop the app process inside the container without stopping the container itself,
 
 ```bash
 # kill gunicorn master inside the running container
-docker exec chat-analyzer-backend-1 pkill gunicorn
+docker exec temple-project-backend-1 pkill gunicorn
 
 # watch health status flip to unhealthy after 3 failed probes (~90s)
-watch -n 5 "docker inspect --format='{{.State.Health.Status}}' chat-analyzer-backend-1"
+watch -n 5 "docker inspect --format='{{.State.Health.Status}}' temple-project-backend-1"
 ```
 
 Because `restart: unless-stopped` is set, Docker will restart the container once the process dies — you may see it cycle back to `starting` before you observe `unhealthy` depending on timing.
@@ -105,7 +105,7 @@ Because `restart: unless-stopped` is set, Docker will restart the container once
 The healthcheck command requires `curl`. Confirm it is present:
 
 ```bash
-docker compose -f docker-compose.prod.yml run --rm backend curl --version
+docker run --rm temple-project-backend:latest curl --version
 ```
 
 This should print the curl version. If it fails, check the `apt-get install curl` step in the `prod` stage of `backend/Dockerfile`.

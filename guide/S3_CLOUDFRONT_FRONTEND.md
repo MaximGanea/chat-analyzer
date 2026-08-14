@@ -57,7 +57,7 @@ curl -I https://temple-project.net/assets/index-abc123.js
 ## Step 1 — Create the S3 bucket
 
 1. AWS Console → **S3** → **Create bucket**
-2. Bucket name: `chat-analyzer-frontend`
+2. Bucket name: `temple-project-frontend`
 3. Region: same region as your EC2 instance (e.g., `eu-central-1`)
 4. **Object Ownership:** leave at `ACLs disabled`
 5. **Block Public Access:** leave all four checkboxes checked (all public access blocked) — CloudFront will access the bucket privately via OAC, not through a public URL
@@ -113,7 +113,7 @@ Create one manually only if your wizard has no such setting, or if you want a na
 
 1. AWS Console → **CloudFront** → left sidebar → **Origin access**
 2. **Create control setting**
-3. Name: `chat-analyzer-frontend-oac`
+3. Name: `temple-project-frontend-oac`
 4. Origin type: **S3**
 5. Signing behavior: **Sign requests (recommended)**
 6. **Create**
@@ -134,17 +134,17 @@ The distribution is the CloudFront configuration that ties together your two ori
 
 CloudFront → **Create distribution**, then work through the wizard steps:
 
-**Get started** — Distribution name: `chat-analyzer-frontend`. Leave the billing plan on the **free** tier; Origin Shield, mutual TLS and Layer 7 DDoS protection are paid-plan features you do not need.
+**Get started** — Distribution name: `temple-project-frontend`. Leave the billing plan on the **free** tier; Origin Shield, mutual TLS and Layer 7 DDoS protection are paid-plan features you do not need.
 
 **Specify origin** — pick the bucket from the dropdown, do not type the domain by hand. Typing it makes CloudFront treat the bucket as a generic custom origin, and the private-access option disappears.
 
 | Field | Value |
 |---|---|
-| Origin domain | Select `chat-analyzer-frontend.s3.eu-central-1.amazonaws.com` from the dropdown |
+| Origin domain | Select `temple-project-frontend.s3.eu-central-1.amazonaws.com` from the dropdown |
 | Grant CloudFront access to origin | **Yes** — creates an OAC and writes the S3 bucket policy for you |
 | Origin settings | **Use recommended origin settings** — the defaults (3 attempts, 10s connect, 30s response) are correct for S3 |
 
-If your console shows an explicit `Origin access` radio with an OAC dropdown instead, choose **Origin access control settings (recommended)** and select `chat-analyzer-frontend-oac` from Step 3. If it shows neither, create the distribution as-is and attach the OAC afterwards: **Origins** tab → S3 origin → **Edit** → `Origin access`.
+If your console shows an explicit `Origin access` radio with an OAC dropdown instead, choose **Origin access control settings (recommended)** and select `temple-project-frontend-oac` from Step 3. If it shows neither, create the distribution as-is and attach the OAC afterwards: **Origins** tab → S3 origin → **Edit** → `Origin access`.
 
 **Enable security** — this is AWS WAF. On the free plan the basic protections are included at no extra charge, so leave them **Enabled**, but turn **`Use monitor mode` on**.
 
@@ -277,13 +277,13 @@ Wait for the distribution status to return to **Enabled** before continuing.
 
 CloudFront can only read from your private bucket if the bucket policy names it explicitly. If you answered **Yes** to `Grant CloudFront access to origin` in 4.1, CloudFront already wrote this policy — verify it and move on.
 
-**S3** → `chat-analyzer-frontend` → **Permissions** tab → **Bucket policy**. You are looking for a statement with `"Service": "cloudfront.amazonaws.com"`.
+**S3** → `temple-project-frontend` → **Permissions** tab → **Bucket policy**. You are looking for a statement with `"Service": "cloudfront.amazonaws.com"`.
 
 If it is there, this step is done. If the policy is empty, add it manually — CloudFront generates it for you:
 
 1. CloudFront → your distribution → **Origins** tab → click the S3 origin → **Edit**
 2. You will see a banner: **"Update the S3 bucket policy"** → click **Copy policy**
-3. Open a new tab → **S3** → `chat-analyzer-frontend` → **Permissions** tab → **Bucket policy** → **Edit**
+3. Open a new tab → **S3** → `temple-project-frontend` → **Permissions** tab → **Bucket policy** → **Edit**
 4. Paste the copied policy → **Save changes**
 
 Until this policy exists, CloudFront returns 403 on every request. That is expected, not a misconfiguration elsewhere.
@@ -300,7 +300,7 @@ The policy looks like this (CloudFront fills in the real ARNs):
         "Service": "cloudfront.amazonaws.com"
       },
       "Action": "s3:GetObject",
-      "Resource": "arn:aws:s3:::chat-analyzer-frontend/*",
+      "Resource": "arn:aws:s3:::temple-project-frontend/*",
       "Condition": {
         "StringEquals": {
           "AWS:SourceArn": "arn:aws:cloudfront::ACCOUNT_ID:distribution/DISTRIBUTION_ID"
@@ -319,9 +319,9 @@ The `Condition` is the key part — it limits access to your specific CloudFront
 
 The pipeline authenticates to AWS with **OIDC**, not access keys: `cd.yml` declares `permissions: id-token: write` and every job does `role-to-assume: ${{ secrets.AWS_ROLE_ARN }}`. GitHub presents a short-lived signed token, AWS verifies it against a trust policy and hands back temporary credentials. There is no IAM user and no long-lived secret key anywhere.
 
-So the permissions live on a **role**, `github-actions-chat-analyzer-role`, which currently grants only ECR and SSM. It now also needs to write to S3 and invalidate the CloudFront cache.
+So the permissions live on a **role**, `github-actions-temple-project-role`, which currently grants only ECR and SSM. It now also needs to write to S3 and invalidate the CloudFront cache.
 
-1. IAM → **Roles** → `github-actions-chat-analyzer-role` → **Permissions** tab
+1. IAM → **Roles** → `github-actions-temple-project-role` → **Permissions** tab
 2. Find the attached customer-managed policy (the name varies — whatever is listed there that is not an AWS-managed policy) → click it → **Edit** → **JSON**
 3. Add two new statements to the existing `Statement` array. Replace `ACCOUNT_ID` and `DISTRIBUTION_ID` with your values (find the distribution ID on the CloudFront console — it looks like `E1A2B3C4D5E6F7`):
 
@@ -335,8 +335,8 @@ So the permissions live on a **role**, `github-actions-chat-analyzer-role`, whic
     "s3:ListBucket"
   ],
   "Resource": [
-    "arn:aws:s3:::chat-analyzer-frontend",
-    "arn:aws:s3:::chat-analyzer-frontend/*"
+    "arn:aws:s3:::temple-project-frontend",
+    "arn:aws:s3:::temple-project-frontend/*"
   ]
 },
 {
@@ -401,14 +401,14 @@ Two things to keep as they are: `environment: production`, because `AWS_ROLE_ARN
 
       - name: Sync hashed assets (long cache)
         run: |
-          aws s3 sync frontend/dist/ s3://chat-analyzer-frontend \
+          aws s3 sync frontend/dist/ s3://temple-project-frontend \
             --delete \
             --exclude "index.html" \
             --cache-control "public, max-age=31536000, immutable"
 
       - name: Sync index.html (no cache)
         run: |
-          aws s3 sync frontend/dist/ s3://chat-analyzer-frontend \
+          aws s3 sync frontend/dist/ s3://temple-project-frontend \
             --exclude "*" \
             --include "index.html" \
             --cache-control "no-cache"
@@ -519,7 +519,7 @@ curl -i https://temple-project.net/api/health
 
 nginx on EC2 no longer needs to serve static files. Remove the static file configuration and leave only the API proxy.
 
-Open an SSM Session Manager terminal on EC2 (EC2 → `chat-analyzer-prod` → Connect → Session Manager → Connect):
+Open an SSM Session Manager terminal on EC2 (EC2 → `temple-project-prod` → Connect → Session Manager → Connect):
 
 ```bash
 ls /etc/nginx/conf.d/          # confirm the actual filename first
@@ -618,7 +618,7 @@ Delete the file from the repo:
 ```bash
 git rm docker-compose.prod.yml
 git commit -m "remove docker-compose.prod.yml — all services replaced by Phase 7"
-git push origin main
+git push origin master
 ```
 
 ---
@@ -720,7 +720,7 @@ Treat the value as a secret — it does not go in the repo, and rotating it mean
 
 **CloudFront returns 403 on all routes**
 
-The S3 bucket policy was not updated (Step 5). Go to S3 → `chat-analyzer-frontend` → Permissions → Bucket policy. If it is empty or does not contain a `cloudfront.amazonaws.com` principal, go back to Step 5 and copy the policy from the CloudFront distribution's Origins tab.
+The S3 bucket policy was not updated (Step 5). Go to S3 → `temple-project-frontend` → Permissions → Bucket policy. If it is empty or does not contain a `cloudfront.amazonaws.com` principal, go back to Step 5 and copy the policy from the CloudFront distribution's Origins tab.
 
 **`/dashboard` shows AccessDenied XML instead of the app**
 
@@ -748,7 +748,7 @@ The `/api/*` behavior is misconfigured. Check:
 
 **`aws s3 sync` fails in GitHub Actions with `AccessDenied`**
 
-The IAM policy update in Step 6 did not save or has a typo. Go to IAM → **Roles** → `github-actions-chat-analyzer-role` → Permissions → open the attached policy → JSON tab, and confirm the `S3Frontend` and `CloudFrontInvalidate` statements are present with the correct bucket name and distribution ID.
+The IAM policy update in Step 6 did not save or has a typo. Go to IAM → **Roles** → `github-actions-temple-project-role` → Permissions → open the attached policy → JSON tab, and confirm the `S3Frontend` and `CloudFrontInvalidate` statements are present with the correct bucket name and distribution ID.
 
 If the error is `Not authorized to perform sts:AssumeRoleWithWebIdentity` instead, the problem is the role's *trust* policy, not its permissions — the job is missing `environment: production` (so `AWS_ROLE_ARN` resolved to an empty string) or the workflow lost `permissions: id-token: write`.
 

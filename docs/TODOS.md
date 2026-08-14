@@ -1,6 +1,6 @@
 # Action Items & Readiness Checklist
 
-**Last reviewed:** 2026-06-15
+**Last reviewed:** 2026-08-14
 
 ---
 
@@ -65,7 +65,7 @@
 
 ### Phase 5: First Production Deployment ✅ DONE
 
-See `guide/EC2_DEPLOYMENT.md` for the full step-by-step guide.
+The original build guide has been replaced by `guide/PRODUCTION_RESTORE.md`, which documents the current teardown state and how to rebuild EC2 + RDS from scratch.
 
 **Tasks:**
 1. Provision an EC2 t3.small with an Elastic IP and connect via SSM Session Manager (no open SSH port). What is an Elastic IP and why does it matter for DNS?
@@ -84,67 +84,54 @@ See `guide/EC2_DEPLOYMENT.md` for the full step-by-step guide.
 **Objective:** Never deploy manually again.
 
 **Tasks:**
-1. Create an **ECR (Elastic Container Registry)** repository named `chat-analyzer-backend`. Push the backend Docker image to it from your local machine manually first to understand the flow. Why use ECR over Docker Hub for private AWS deployments?
+1. Create an **ECR (Elastic Container Registry)** repository named `temple-project-backend`. Push the backend Docker image to it from your local machine manually first to understand the flow. Why use ECR over Docker Hub for private AWS deployments?
 2. Create the GitHub Actions CI workflow. Run on every PR: install deps, run backend tests against a real PostgreSQL service container, run frontend tests.
 3. Create the **CD workflow**: on merge to `main` — build the Docker image, push to ECR, connect to EC2 via `aws ssm start-session` and pull + restart the container. Store the AWS credentials in GitHub Actions Environments (not repository secrets — what is the difference?).
 4. Add the `migrate` job before `deploy-backend`. What happens if you deploy new code before running migrations?
 5. Implement a smoke test in the deploy workflow: `curl` the health endpoint after deployment and verify it returns `{"status": "ok"}`. Fail the workflow if it does not.
-6. Tag each deployment with the git SHA: `docker build -t chat-analyzer-backend:${{ github.sha }}`. How does this enable one-command rollback?
+6. Tag each deployment with the git SHA: `docker build -t temple-project-backend:${{ github.sha }}`. How does this enable one-command rollback?
 
 **Validation:** Make a code change, push to a feature branch, open a PR, watch CI pass, merge, watch the deployment push the change to production — all without a manual command.
 
 ---
 
-### Phase 7: Frontend to S3 + CloudFront (1 week)
+### Phase 7: Frontend to S3 + CloudFront ✅ DONE
 
-**Objective:** Stop serving static files from EC2. Offload the frontend to a managed CDN so nginx only handles API proxying.
+See `guide/S3_CLOUDFRONT_FRONTEND.md` for the full step-by-step guide.
 
-**Why:** The React build is a set of static files — there is no reason to serve them from a compute instance. S3 + CloudFront gives you a global CDN, near-zero cost at this scale, and removes one reason to touch the EC2 instance.
+**Result:** the React build is served from a private S3 bucket through CloudFront. nginx on EC2 only proxies `/api/*`. The frontend is built on the GitHub runner, never on the server.
+
+```
+Internet → Route 53 (alias) → CloudFront
+                               ├── /*       → S3 (private, OAC)
+                               └── /api/*   → origin.temple-project.net → EC2 nginx :80 → :8000
+```
 
 **Tasks:**
-1. Create an S3 bucket named `chat-analyzer-frontend`. Enable **static website hosting**. Block all public access and serve exclusively through CloudFront (never expose the bucket directly). Why does serving through CloudFront instead of S3 directly matter for security and performance?
-2. Request an **ACM (AWS Certificate Manager)** certificate for `yourdomain.com` and `www.yourdomain.com` in `us-east-1` (required for CloudFront). ACM auto-renews — no certbot needed for the frontend. What is the difference between DNS validation and email validation for ACM?
-3. Create a **CloudFront distribution**:
-   - Origin: the S3 bucket (via Origin Access Control, not a public bucket URL)
-   - Default behavior: route to S3
-   - `/api/*` behavior: route to your EC2 Elastic IP
-   - Viewer protocol: HTTPS only, redirect HTTP
-   - Attach the ACM certificate
-4. Update DNS: point `yourdomain.com` to the CloudFront distribution domain, not the Elastic IP directly.
-5. Set correct `Cache-Control` headers:
-   - Hashed assets (`/assets/*.js`, `/assets/*.css`): `Cache-Control: public, max-age=31536000, immutable`
-   - `index.html`: `Cache-Control: no-cache` — so deploys are visible immediately
-6. Update the CI/CD deploy workflow:
-   - **IAM first:** add S3 and CloudFront permissions to the `github-actions-chat-analyzer-policy` in IAM (the user created in Phase 6 has no S3 or CloudFront permissions yet — the sync will be denied without this).
-   - **Replace** the `deploy-frontend` job in `cd.yml` — the current job builds on EC2 via SSM/git pull; remove that job entirely and add a new job that builds in the GitHub Actions runner and syncs to S3. EC2 itself stays — the backend container keeps running there; only the frontend deploy mechanism changes.
-   - Run two separate `aws s3 sync` passes to set the correct `Cache-Control` per file type (task 5 is implemented here):
-     - Hashed assets first: `aws s3 sync dist/ s3://chat-analyzer-frontend --delete --exclude "index.html" --cache-control "public, max-age=31536000, immutable"`
-     - Then `index.html`: `aws s3 sync dist/ s3://chat-analyzer-frontend --exclude "*" --include "index.html" --cache-control "no-cache"`
-   - After the sync, invalidate the CloudFront cache for `index.html` so users see the new version immediately: `aws cloudfront create-invalidation --distribution-id YOUR_DIST_ID --paths "/index.html"`
-7. Remove the nginx static file serving config from EC2 — nginx now only proxies `/api/*`. Verify the backend still works.
-   - Also remove certbot from EC2: delete the renewal cron job (`/etc/cron.d/certbot`), the certbot virtualenv (`/opt/certbot`), and the Let's Encrypt certificates (`/etc/letsencrypt`). CloudFront handles TLS via ACM — certbot is dead weight after this phase.
-8. Clean up files and docs that are now obsolete:
-   - Delete `docker-compose.prod.yml` — every service it defined is now replaced:
-     ```
-     docker-compose.prod.yml
-     ├── postgres   → RDS (replaced in Phase 5)
-     ├── backend    → docker run on EC2, image pulled from ECR (replaced in Phase 6)
-     └── frontend   → S3 + CloudFront (replaced in Phase 7)
-     ```
-   - Remove the Node.js install block from `PHASE5_PRODUCTION_DEPLOYMENT.md` (Step 8.1) — the frontend no longer builds on the server
-   - Remove Steps 8.2 and 8.3 from `PHASE5_PRODUCTION_DEPLOYMENT.md` — `/var/www/html` is no longer used
-   - Update the architecture diagram in `PHASE5_PRODUCTION_DEPLOYMENT.md` to reflect the new layout (CloudFront → S3 for frontend, CloudFront → EC2 for API)
+1. ✅ Private S3 bucket `temple-project-frontend`, all public access blocked. No static website hosting — CloudFront reads the REST API directly via Origin Access Control.
+2. ✅ ACM certificate for `temple-project.net` + `www` in `us-east-1`, DNS-validated through Route 53. Auto-renews.
+3. ✅ CloudFront distribution: S3 default behavior (`CachingOptimized`), `/api/*` behavior to EC2 (`CachingDisabled`, `AllViewer`, all HTTP methods). WAF enabled.
+4. ✅ Route 53 alias records for the apex and `www` point at the distribution. A separate `origin.temple-project.net` A record holds the Elastic IP — CloudFront rejects raw IPs as origins.
+5. ✅ `Cache-Control` set per file type by two `aws s3 sync` passes: hashed assets `public, max-age=31536000, immutable`, `index.html` `no-cache`.
+6. ✅ `deploy-frontend` in `cd.yml` rebuilt: builds on the runner, syncs to S3, invalidates `/index.html`. Auth is OIDC via `AWS_ROLE_ARN` — the S3 and CloudFront permissions went on `github-actions-temple-project-role`, not on an IAM user.
+7. ✅ nginx reduced to the `/api/` proxy. certbot, `/etc/letsencrypt`, `/var/www/html` and Node.js removed from EC2.
+8. ✅ `docker-compose.prod.yml` deleted (commit `419245c`) — every service it defined is now RDS, ECR or S3.
 
-**Validation:** `curl -I https://yourdomain.com/assets/index-abc123.js` returns `Cache-Control: public, max-age=31536000, immutable` and an `X-Cache: Hit from cloudfront` header on the second request.
+**SPA routing note:** direct navigation to `/dashboard` is handled by a CloudFront Function (`spa-router`) on the default behavior, which rewrites extensionless paths to `/index.html`. The older recipe — custom error responses mapping 403/404 to `/index.html` — was rejected deliberately: those apply distribution-wide and would rewrite the backend's own 403/404 responses on `/api/*` into HTML with status 200.
+
+**Deferred:** Step 13 of the guide — locking the EC2 origin to CloudFront with a shared `X-Origin-Verify` header, or an EC2 security group restricted to the `com.amazonaws.global.cloudfront.origin-facing` prefix list. Until then `origin.temple-project.net` and the raw Elastic IP reach the backend directly, bypassing CloudFront and WAF.
+
+**Validation:** ✅ `curl -I https://temple-project.net/assets/index-*.js` returns `Cache-Control: public, max-age=31536000, immutable` and `X-Cache: Hit from cloudfront` on the second request.
 
 ---
+
 
 ### Phase 8: Observability and Alerting (1–2 weeks)
 
 **Objective:** Know about problems before users report them.
 
 **Tasks:**
-1. Configure the Docker container to emit logs to **CloudWatch Logs** using the `awslogs` log driver. Create a log group `/chat-analyzer/backend` with a 30-day retention policy.
+1. Configure the Docker container to emit logs to **CloudWatch Logs** using the `awslogs` log driver. Create a log group `/temple-project/backend` with a 30-day retention policy.
 2. Create **CloudWatch metric filters** on the log group to turn structured JSON log fields into metrics:
    - Filter on `status_code >= 500` → custom metric `BackendErrors`
    - Filter on `duration_ms` → custom metric `BackendLatency`
@@ -167,15 +154,18 @@ See `guide/EC2_DEPLOYMENT.md` for the full step-by-step guide.
 
 **Estimated extra cost: ~$60–70/month on top of the existing stack.**
 
-**ALB + ACM (replace nginx + certbot on EC2):**
+**ALB + ACM (replace the remaining nginx on EC2):**
+
+certbot is already gone — CloudFront terminates TLS with an ACM certificate since Phase 7. What is left on EC2 is a plain HTTP nginx proxying `/api/` to the container.
+
 1. Create an **Application Load Balancer** in the public subnet. Attach a listener on port 443 with an ACM certificate. Forward to a target group containing your EC2 instance on port 8000. What is the benefit of TLS termination at the ALB vs. on the EC2 instance?
 2. Update the CloudFront `/api/*` origin to point to the ALB DNS name instead of the EC2 Elastic IP directly.
 3. Update the EC2 security group: allow port 8000 inbound **only from the ALB security group** — not from anywhere else. The backend becomes unreachable even if someone knows the EC2 IP.
-4. Remove certbot and the HTTPS nginx config from EC2. nginx is no longer needed — the ALB routes directly to the Docker container on port 8000. Uninstall nginx.
+4. Uninstall nginx from EC2 — the ALB routes directly to the Docker container on port 8000, so the last reason to keep it disappears. This also supersedes Step 13 of `guide/S3_CLOUDFRONT_FRONTEND.md`: with the backend reachable only from the ALB security group, the `X-Origin-Verify` header becomes unnecessary.
 
 **AWS Parameter Store (replace `backend/.env` on disk):**
-5. Store all secrets in **AWS Systems Manager Parameter Store** as `SecureString` parameters under the path `/chat-analyzer/prod/`. Why is Parameter Store better than a `.env` file on disk? What is the difference between Parameter Store and Secrets Manager?
-6. Grant the EC2 IAM role (`chat-analyzer-ec2-ssm-role`) `ssm:GetParametersByPath` permission for `/chat-analyzer/prod/*`.
+5. Store all secrets in **AWS Systems Manager Parameter Store** as `SecureString` parameters under the path `/temple-project/prod/`. Why is Parameter Store better than a `.env` file on disk? What is the difference between Parameter Store and Secrets Manager?
+6. Grant the EC2 IAM role (`temple-project-ec2-ssm-role`) `ssm:GetParametersByPath` permission for `/temple-project/prod/*`.
 7. Update the container startup: read secrets from Parameter Store at launch instead of from a file. Remove `backend/.env` from the server entirely.
 8. Update the CI/CD workflow to pull non-secret config from Parameter Store rather than hardcoding it.
 

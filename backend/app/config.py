@@ -8,11 +8,11 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     environment: str = Field(default="development", alias="ENVIRONMENT")
-    app_name: str = Field(default="chat-analyzer-api", alias="APP_NAME")
+    app_name: str = Field(default="temple-project-api", alias="APP_NAME")
     app_debug: bool = Field(default=False, alias="APP_DEBUG")
 
     database_url: str = Field(
-        default="postgresql+asyncpg://chat_user:chat_pass@localhost:5432/chat_analyzer",
+        default="postgresql+asyncpg://temple_user:temple_pass@localhost:5432/temple_project",
         alias="DATABASE_URL",
     )
     database_ssl: bool = Field(default=False, alias="DATABASE_SSL")
